@@ -16,10 +16,12 @@ import torch
 
 from pathlib import Path
 from seamless_communication.inference import Translator
-from fairseq2.data import Collater, DataPipeline, FileMapper
+from fairseq2.data import Collater
+from fairseq2.data.data_pipeline import DataPipeline, FileMapper
 from fairseq2.data.audio import AudioDecoder, WaveformToFbankConverter
 from fairseq2.data.text import StrSplitter, read_text
-from fairseq2.typing import DataType, Device
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 
 from seamless_communication.toxicity import load_etox_bad_word_checker
 
@@ -207,7 +209,7 @@ def build_data_pipeline(
 
     pipeline_builder = read_text(data_file, rtrim=True).skip(1).map(split_tsv)
 
-    map_file = FileMapper(root_dir=audio_root_dir, cached_fd_count=10)
+    map_file = FileMapper(root_dir=Path(audio_root_dir), cached_fd_count=10)
 
     pipeline_builder.map(
         map_file,

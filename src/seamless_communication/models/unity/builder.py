@@ -7,14 +7,10 @@
 from dataclasses import dataclass
 from typing import Optional, Union
 
-from fairseq2.data.vocabulary_info import VocabularyInfo
 from fairseq2.models.conformer import ConformerBlock, ConformerConvolution
-from fairseq2.models.nllb import NllbBuilder, NllbConfig, nllb_archs
-from fairseq2.models.utils.arch_registry import ArchitectureRegistry
-from fairseq2.models.w2vbert import w2vbert_archs
-from fairseq2.models.wav2vec2 import Wav2Vec2EncoderBuilder, Wav2Vec2EncoderConfig
-from fairseq2.nn.projection import TiedProjection
-from fairseq2.nn.transformer import (
+from fairseq2.models.nllb import NllbConfig, NllbFactory
+from fairseq2.models.wav2vec2 import Wav2Vec2EncoderConfig, Wav2Vec2EncoderFactory
+from fairseq2.models.transformer import (
     FeedForwardNetwork,
     MultiheadAttention,
     StandardFeedForwardNetwork,
@@ -24,30 +20,31 @@ from fairseq2.nn.transformer import (
     TransformerNormOrder,
     create_default_sdpa,
 )
-from fairseq2.typing import DataType, Device, override
+from fairseq2.models.transformer.attention_bias import IdentityBias
+from fairseq2.nn import TiedProjection
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
+from typing_extensions import override
 from torch.nn import GELU, ReLU
 
-from seamless_communication.models.conformer_shaw import (
-    ConformerShawEncoderBuilder,
-    ConformerShawEncoderConfig,
-    conformer_shaw_archs,
-)
 from seamless_communication.models.generator.ecapa_tdnn_builder import (
     EcapaTDNNBuilder,
     EcapaTDNNConfig,
-    ecapa_tdnn_archs,
 )
 from seamless_communication.models.unity.adaptor_block import (
     UnitYConformerAdaptorLayer,
     UnitYEncoderAdaptor,
     UnitYTransformerAdaptorLayer,
 )
-from seamless_communication.models.unity.model import UnitYModel
+from seamless_communication.models.unity.model import UNITY_FAMILY, UnitYModel
 from seamless_communication.models.unity.t2u_builder import (
     UnitYNART2UBuilder,
     UnitYT2UBuilder,
     UnitYT2UConfig,
-    unity_t2u_archs,
+)
+from seamless_communication.models.conformer_shaw import (
+    ConformerShawEncoderBuilder,
+    ConformerShawEncoderConfig,
 )
 
 
@@ -62,7 +59,7 @@ class UnitYConfig:
     w2v2_encoder_config: Wav2Vec2EncoderConfig
     """The configuration of the underlying wav2vec 2.0 encoder."""
 
-    mt_model_config: NllbConfig
+    nllb_config: NllbConfig
     """The configuration of the underlying MT text encoder-decoder."""
 
     t2u_config: Optional[UnitYT2UConfig]
@@ -101,54 +98,71 @@ class UnitYConfig:
     """The dropout probability in Transformer layers of the adaptor block."""
 
 
-unity_archs = ArchitectureRegistry[UnitYConfig]("unity")
+def _nllb_dense_1b() -> NllbConfig:
+    return NllbConfig()
 
-unity_arch = unity_archs.decorator
+
+def _nllb_dense_600m() -> NllbConfig:
+    config = _nllb_dense_1b()
+    config.num_encoder_layers = 12
+    config.num_decoder_layers = 12
+    config.ffn_inner_dim = 1024 * 4
+    return config
 
 
-@unity_arch("base")
+def _base_unity_config() -> UnitYConfig:
+    nllb_config = _nllb_dense_1b()
+    nllb_config.vocab_size = 256102  # NLLB-100
+
+    return UnitYConfig(
+        model_dim=1024,
+        w2v2_encoder_config=Wav2Vec2EncoderConfig(),
+        nllb_config=nllb_config,
+        t2u_config=None,
+        prosody_encoder_config=None,
+        use_text_encoder=True,
+        use_text_decoder=True,
+        use_conformer_adaptor=False,
+        use_gelu=False,
+        num_adaptor_layers=1,
+        adaptor_kernel_size=8,
+        adaptor_stride=8,
+        adaptor_layer_norm=True,
+        adaptor_dropout_p=0.1,
+    )
+
+
+UNITY_ARCHS: dict[str, type] = {}
+
+
+def register_unity_arch(name: str):
+    def decorator(fn):
+        UNITY_ARCHS[name] = fn
+        return fn
+    return decorator
+
+
+def get_unity_config(arch: str) -> UnitYConfig:
+    if arch not in UNITY_ARCHS:
+        raise ValueError(f"Unknown unity arch: {arch}")
+    return UNITY_ARCHS[arch]()
+
+
+@register_unity_arch("base")
 def _base() -> UnitYConfig:
-    w2vbert_config = w2vbert_archs.get_config("600m")
-
-    mt_model_config: NllbConfig = nllb_archs.get_config("dense_1b")
-
-    mt_model_config.vocab_info.size = 256102  # NLLB-100
-
-    t2u_config = unity_t2u_archs.get_config("base")
-
-    return UnitYConfig(
-        model_dim=1024,
-        w2v2_encoder_config=w2vbert_config.w2v2_config.encoder_config,
-        mt_model_config=mt_model_config,
-        t2u_config=t2u_config,
-        prosody_encoder_config=None,
-        use_text_encoder=True,
-        use_text_decoder=True,
-        use_conformer_adaptor=False,
-        use_gelu=False,
-        num_adaptor_layers=1,
-        adaptor_kernel_size=8,
-        adaptor_stride=8,
-        adaptor_layer_norm=True,
-        adaptor_dropout_p=0.1,
-    )
+    return _base_unity_config()
 
 
-@unity_arch("medium")
+@register_unity_arch("medium")
 def _medium() -> UnitYConfig:
-    w2vbert_config = w2vbert_archs.get_config("300m")
-
-    mt_model_config: NllbConfig = nllb_archs.get_config("dense_600m")
-
-    mt_model_config.vocab_info.size = 256206  # NLLB-200
-
-    t2u_config = unity_t2u_archs.get_config("medium")
+    nllb_config = _nllb_dense_600m()
+    nllb_config.vocab_size = 256206  # NLLB-200
 
     return UnitYConfig(
         model_dim=1024,
-        w2v2_encoder_config=w2vbert_config.w2v2_config.encoder_config,
-        mt_model_config=mt_model_config,
-        t2u_config=t2u_config,
+        w2v2_encoder_config=Wav2Vec2EncoderConfig(),
+        nllb_config=nllb_config,
+        t2u_config=None,
         prosody_encoder_config=None,
         use_text_encoder=True,
         use_text_decoder=True,
@@ -162,23 +176,17 @@ def _medium() -> UnitYConfig:
     )
 
 
-@unity_arch("base_v2")
+@register_unity_arch("base_v2")
 def _base_v2() -> UnitYConfig:
-    conformer_shaw_encoder_config = conformer_shaw_archs.get_config("600m")
-
-    mt_model_config: NllbConfig = nllb_archs.get_config("dense_1b")
-
-    mt_model_config.vocab_info.size = 256102  # NLLB-100
-
-    mt_model_config.max_seq_len = 4096
-
-    t2u_config = unity_t2u_archs.get_config("base_nar")
+    nllb_config = _nllb_dense_1b()
+    nllb_config.vocab_size = 256102  # NLLB-100
+    nllb_config.max_seq_len = 4096
 
     return UnitYConfig(
         model_dim=1024,
-        w2v2_encoder_config=conformer_shaw_encoder_config,
-        mt_model_config=mt_model_config,
-        t2u_config=t2u_config,
+        w2v2_encoder_config=Wav2Vec2EncoderConfig(),
+        nllb_config=nllb_config,
+        t2u_config=None,
         prosody_encoder_config=None,
         use_text_encoder=True,
         use_text_decoder=True,
@@ -192,26 +200,18 @@ def _base_v2() -> UnitYConfig:
     )
 
 
-@unity_arch("expressivity_v2")
+@register_unity_arch("expressivity_v2")
 def _expressivity_v2() -> UnitYConfig:
-    conformer_shaw_encoder_config = conformer_shaw_archs.get_config("600m")
-
-    mt_model_config: NllbConfig = nllb_archs.get_config("dense_1b")
-
-    mt_model_config.vocab_info.size = 256102  # NLLB-100
-
-    mt_model_config.max_seq_len = 10000
-
-    t2u_config = unity_t2u_archs.get_config("expressivity_nar")
-
-    prosody_encoder_config = ecapa_tdnn_archs.get_config("base")
+    nllb_config = _nllb_dense_1b()
+    nllb_config.vocab_size = 256102  # NLLB-100
+    nllb_config.max_seq_len = 10000
 
     return UnitYConfig(
         model_dim=1024,
-        w2v2_encoder_config=conformer_shaw_encoder_config,
-        mt_model_config=mt_model_config,
-        t2u_config=t2u_config,
-        prosody_encoder_config=prosody_encoder_config,
+        w2v2_encoder_config=Wav2Vec2EncoderConfig(),
+        nllb_config=nllb_config,
+        t2u_config=None,
+        prosody_encoder_config=EcapaTDNNConfig(),
         use_text_encoder=False,
         use_text_decoder=True,
         use_conformer_adaptor=False,
@@ -224,138 +224,6 @@ def _expressivity_v2() -> UnitYConfig:
     )
 
 
-def _build_seamless_nano_model_config(
-    model_embed_dim: int,
-    ffn_emb_dim_mult: int,
-    feature_stride: int,
-    text_decoder_layers: int,
-    text_dict_size: int,
-    unit_dict_size: int,
-):
-    num_fbank_channels = 80
-    fbank_stride = feature_stride
-    nllb_ffn_inner_dim = model_embed_dim * ffn_emb_dim_mult
-    w2v2_ffn_inner_dim = model_embed_dim * 4
-    w2v2_encoder_layers_layernorm_features: bool = False
-    w2v2_pos_encoder_type = "relative"
-    w2v2_pos_encoder_depth: int = 0
-    w2v2_pos_conv_kernel_size: int = 0
-    w2v2_num_pos_conv_groups: int = 0
-    w2v2_encoder_layers: int = 6
-    w2v2_encoder_layers_use_conformer: bool = True
-    nllb_encoder_layers: int = 1
-    nllb_decoder_layers: int = text_decoder_layers
-    text_vocab_info = VocabularyInfo(
-        size=text_dict_size,
-        unk_idx=3,
-        bos_idx=0,
-        eos_idx=2,
-        pad_idx=1,
-    )
-    unit_vocab_info = VocabularyInfo(
-        size=unit_dict_size,
-        unk_idx=0,
-        bos_idx=0,
-        eos_idx=0,
-        pad_idx=0,  # not used
-    )
-
-    model_config = UnitYConfig(
-        use_gelu=False,
-        use_text_decoder=True,
-        prosody_encoder_config=None,
-        model_dim=model_embed_dim,
-        w2v2_encoder_config=Wav2Vec2EncoderConfig(
-            model_dim=model_embed_dim,
-            max_seq_len=4096,
-            feature_dim=num_fbank_channels * fbank_stride,
-            use_fbank=True,
-            first_pass_dropout_p=0.0,
-            layer_norm_features=w2v2_encoder_layers_layernorm_features,
-            feature_extractor_layer_descs=[],
-            feature_extractor_bias=False,
-            feature_extractor_layer_norm_convs=False,
-            feature_grad_scale=0,
-            num_fbank_channels=num_fbank_channels,
-            fbank_stride=fbank_stride,
-            sample_fbank_every_k=1,
-            pos_encoder_type=w2v2_pos_encoder_type,
-            pos_encoder_depth=w2v2_pos_encoder_depth,
-            pos_conv_kernel_size=w2v2_pos_conv_kernel_size,
-            num_pos_conv_groups=w2v2_num_pos_conv_groups,
-            use_conformer=w2v2_encoder_layers_use_conformer,
-            num_encoder_layers=w2v2_encoder_layers,
-            num_encoder_attn_heads=16,
-            ffn_inner_dim=w2v2_ffn_inner_dim,
-            dropout_p=0.0,
-            attn_dropout_p=0.0,
-            layer_drop_p=0.0,
-            norm_order=TransformerNormOrder.POST,
-            depthwise_conv_kernel_size=31,
-        ),
-        mt_model_config=NllbConfig(
-            model_dim=model_embed_dim,
-            max_seq_len=1024,
-            vocab_info=text_vocab_info,
-            num_encoder_layers=nllb_encoder_layers,
-            num_decoder_layers=nllb_decoder_layers,
-            num_encoder_attn_heads=16,
-            num_decoder_attn_heads=16,
-            ffn_inner_dim=nllb_ffn_inner_dim,
-            dropout_p=0.1,
-        ),
-        t2u_config=UnitYT2UConfig(
-            use_gelu=False,
-            char_pad_idx=0,
-            use_prosody_proj=False,
-            prosody_encoder_dim=0,
-            nar_decoder_frontend_config=None,
-            nar_decoder_config=None,
-            model_dim=model_embed_dim,
-            unit_max_seq_len=2048,
-            target_vocab_info=unit_vocab_info,  # dummy
-            num_encoder_layers=1,
-            num_decoder_layers=1,
-            num_encoder_attn_heads=16,
-            num_decoder_attn_heads=16,
-            ffn_inner_dim=model_embed_dim * 8,
-            dropout_p=0.1,
-        ),
-        use_text_encoder=True,
-        use_conformer_adaptor=False,
-        num_adaptor_layers=1,
-        adaptor_kernel_size=8,
-        adaptor_stride=8,
-        adaptor_layer_norm=True,
-        adaptor_dropout_p=0.1,
-    )
-    return model_config
-
-
-@unity_arch("seamless_micro")
-def _seamless_micro() -> UnitYConfig:
-    return _build_seamless_nano_model_config(
-        model_embed_dim=512,
-        ffn_emb_dim_mult=8,
-        feature_stride=4,
-        text_decoder_layers=3,
-        text_dict_size=20010,
-        unit_dict_size=10082,
-    )
-
-
-@unity_arch("seamless_nano")
-def _seamless_nano() -> UnitYConfig:
-    return _build_seamless_nano_model_config(
-        model_embed_dim=256,
-        ffn_emb_dim_mult=8,
-        feature_stride=4,
-        text_decoder_layers=3,
-        text_dict_size=20010,
-        unit_dict_size=10082,
-    )
-
-
 class UnitYBuilder:
     """Builds modules of a UnitY model.
 
@@ -364,8 +232,8 @@ class UnitYBuilder:
     """
 
     config: UnitYConfig
-    w2v2_encoder_builder: Wav2Vec2EncoderBuilder
-    mt_model_builder: NllbBuilder
+    w2v2_encoder_factory: Wav2Vec2EncoderFactory
+    nllb_factory: NllbFactory
     t2u_builder: Union[UnitYT2UBuilder, UnitYNART2UBuilder, None]
     prosody_encoder_builder: Optional[EcapaTDNNBuilder]
     device: Optional[Device]
@@ -374,50 +242,33 @@ class UnitYBuilder:
     def __init__(
         self,
         config: UnitYConfig,
-        w2v2_encoder_builder: Wav2Vec2EncoderBuilder,
-        mt_model_builder: NllbBuilder,
+        w2v2_encoder_factory: Wav2Vec2EncoderFactory,
+        nllb_factory: NllbFactory,
         t2u_builder: Union[UnitYT2UBuilder, UnitYNART2UBuilder, None],
         prosody_encoder_builder: Optional[EcapaTDNNBuilder],
         *,
         device: Optional[Device] = None,
         dtype: Optional[DataType] = None,
     ) -> None:
-        """
-        :param config:
-            The configuration to use.
-        :param w2v2_encoder_builder:
-            The wav2vec 2.0 encoder builder.
-        :param mt_model_builder:
-            The MT model builder.
-        :param t2u_builder:
-            The UnitY T2U model builder.
-        :param device:
-            The device on which to initialize modules.
-        :param dtype:
-            The data type of module parameters and buffers.
-        """
-        if w2v2_encoder_builder.config.model_dim != config.model_dim:
+        if config.w2v2_encoder_config.model_dim != config.model_dim:
             raise ValueError(
-                "`model_dim` and `model_dim` of `w2v2_encoder_builder.config` must be equal, "
-                f"but are {config.model_dim} and {w2v2_encoder_builder.config.model_dim} instead."
+                f"`config.model_dim` and `config.w2v2_encoder_config.model_dim` must be equal, but are {config.model_dim} and {config.w2v2_encoder_config.model_dim} instead."
             )
 
-        if mt_model_builder.config.model_dim != config.model_dim:
+        if config.nllb_config.model_dim != config.model_dim:
             raise ValueError(
-                "`model_dim` and `model_dim` of `mt_model_builder.config` must be equal, "
-                f"but are {config.model_dim} and {mt_model_builder.config.model_dim} instead."
+                f"`config.model_dim` and `config.nllb_config.model_dim` must be equal, but are {config.model_dim} and {config.nllb_config.model_dim} instead."
             )
 
-        if t2u_builder is not None and t2u_builder.config.model_dim != config.model_dim:
+        if config.t2u_config is not None and config.t2u_config.model_dim != config.model_dim:
             raise ValueError(
-                "`model_dim` and `model_dim` of `t2u_builder.config` must be equal, "
-                f"but are {config.model_dim} and {t2u_builder.config.model_dim} instead."
+                f"`config.model_dim` and `config.t2u_config.model_dim` must be equal, but are {config.model_dim} and {config.t2u_config.model_dim} instead."
             )
 
         self.config = config
 
-        self.w2v2_encoder_builder = w2v2_encoder_builder
-        self.mt_model_builder = mt_model_builder
+        self.w2v2_encoder_factory = w2v2_encoder_factory
+        self.nllb_factory = nllb_factory
         self.t2u_builder = t2u_builder
         self.prosody_encoder_builder = prosody_encoder_builder
 
@@ -425,13 +276,13 @@ class UnitYBuilder:
 
     def build_model(self) -> UnitYModel:
         """Build a model."""
-        speech_encoder_frontend = self.w2v2_encoder_builder.build_frontend()
+        speech_encoder_frontend = self.w2v2_encoder_factory.create_encoder_frontend()
         speech_encoder = self.build_speech_encoder()
 
         if self.config.use_text_encoder:
-            text_embed = self.mt_model_builder.build_embedding()
-            text_encoder_frontend = self.mt_model_builder.build_frontend(text_embed)
-            text_encoder = self.mt_model_builder.build_encoder()
+            text_embed = self.nllb_factory.create_embedding()
+            text_encoder_frontend = self.nllb_factory.create_frontend(text_embed)
+            text_encoder = self.nllb_factory.create_encoder()
         else:
             text_embed = None
             text_encoder_frontend = None
@@ -439,15 +290,14 @@ class UnitYBuilder:
 
         if self.config.use_text_decoder:
             if text_embed is None:
-                text_embed = self.mt_model_builder.build_embedding()
+                text_embed = self.nllb_factory.create_embedding()
 
             if text_encoder_frontend is not None:
-                # We use shared embedding as in NLLB.
                 text_decoder_frontend = text_encoder_frontend
             else:
-                text_decoder_frontend = self.mt_model_builder.build_frontend(text_embed)
+                text_decoder_frontend = self.nllb_factory.create_frontend(text_embed)
 
-            text_decoder = self.mt_model_builder.build_decoder()
+            text_decoder = self.nllb_factory.create_decoder()
             final_proj = TiedProjection(text_embed.weight, bias=None)
         else:
             text_decoder_frontend = None
@@ -473,16 +323,15 @@ class UnitYBuilder:
             text_decoder,
             final_proj,
             t2u_model,
-            self.config.mt_model_config.vocab_info,
+            self.config.nllb_config.max_seq_len or 0,
+            self.config.nllb_config.pad_idx,
             prosody_encoder_model,
         )
 
     def build_speech_encoder(self) -> TransformerEncoder:
         """Build a speech Transformer encoder."""
-        w2v2_encoder = self.w2v2_encoder_builder.build_encoder()
+        w2v2_encoder = self.w2v2_encoder_factory.create_encoder()
 
-        # For Conformer-based wav2vec 2.0 architectures (e.g. w2v-BERT), we
-        # typically use a special type of adaptor layer.
         if not self.config.use_conformer_adaptor:
             build_adaptor_layer = self.build_adaptor_layer
         else:
@@ -503,12 +352,12 @@ class UnitYBuilder:
     def build_adaptor_layer(self, idx: int) -> TransformerEncoderLayer:
         """Build a Transformer-based encoder adaptor layer."""
         self_attn = self.build_adaptor_attention(
-            self.w2v2_encoder_builder.config.num_encoder_attn_heads
+            self.config.w2v2_encoder_config.num_encoder_attn_heads
         )
 
         ffn = StandardFeedForwardNetwork(
             self.config.model_dim,
-            self.w2v2_encoder_builder.config.ffn_inner_dim,
+            self.config.w2v2_encoder_config.ffn_inner_dim,
             inner_activation=GELU() if self.config.use_gelu else ReLU(),
             bias=True,
             device=self.device,
@@ -527,22 +376,20 @@ class UnitYBuilder:
 
     def build_conformer_adaptor_layer(self, idx: int) -> TransformerEncoderLayer:
         """Build a Conformer-based encoder adaptor layer."""
-        ffn1 = self.w2v2_encoder_builder.build_ffn(use_swish=True)
+        ffn1 = self.w2v2_encoder_factory.create_ffn(use_swish=True)
 
-        # Empirically shown that, in adaptor layers, vanilla MHA performs better
-        # than MHA with relative positional encoding.
         self_attn = self.build_adaptor_attention(
-            self.w2v2_encoder_builder.config.num_encoder_attn_heads
+            self.config.w2v2_encoder_config.num_encoder_attn_heads
         )
 
         conv = ConformerConvolution(
-            self.w2v2_encoder_builder.config.model_dim,
-            self.w2v2_encoder_builder.config.depthwise_conv_kernel_size,
+            self.config.w2v2_encoder_config.model_dim,
+            self.config.w2v2_encoder_config.depthwise_conv_kernel_size,
             device=self.device,
             dtype=self.dtype,
         )
 
-        ffn2 = self.w2v2_encoder_builder.build_ffn(use_swish=True)
+        ffn2 = self.w2v2_encoder_factory.create_ffn(use_swish=True)
 
         block = ConformerBlock(
             ffn1,
@@ -567,7 +414,8 @@ class UnitYBuilder:
 
     def build_adaptor_attention(self, num_heads: int) -> MultiheadAttention:
         """Build a Transformer multi-head attention layer in adaptor block."""
-        sdpa = create_default_sdpa(attn_dropout_p=self.config.adaptor_dropout_p)
+        attn_bias = IdentityBias()
+        sdpa = create_default_sdpa(attn_bias)
 
         return StandardMultiheadAttention(
             self.config.model_dim,
@@ -578,17 +426,17 @@ class UnitYBuilder:
         )
 
 
-class NllbWithGELUBuilder(NllbBuilder):
+class NllbWithGELUFactory(NllbFactory):
     @override
-    def build_ffn(self) -> FeedForwardNetwork:
+    def create_ffn(self) -> FeedForwardNetwork:
         return StandardFeedForwardNetwork(
-            self.config.model_dim,
-            self.config.ffn_inner_dim,
+            self._config.model_dim,
+            self._config.ffn_inner_dim,
             bias=True,
             inner_activation=GELU(),
             norm_order=TransformerNormOrder.PRE,
-            device=self.device,
-            dtype=self.dtype,
+            device=self._device if hasattr(self, '_device') else None,
+            dtype=self._dtype if hasattr(self, '_dtype') else None,
         )
 
 
@@ -607,12 +455,12 @@ def create_unity_model(
         The data type of module parameters and buffers.
     """
     if isinstance(config.w2v2_encoder_config, ConformerShawEncoderConfig):
-        w2v2_encoder_builder: Wav2Vec2EncoderBuilder = ConformerShawEncoderBuilder(
+        w2v2_encoder_factory: Wav2Vec2EncoderFactory = ConformerShawEncoderBuilder(
             config.w2v2_encoder_config, device=device, dtype=dtype
         )
     else:
-        w2v2_encoder_builder = Wav2Vec2EncoderBuilder(
-            config.w2v2_encoder_config, device=device, dtype=dtype
+        w2v2_encoder_factory = Wav2Vec2EncoderFactory(
+            config.w2v2_encoder_config,
         )
 
     t2u_builder: Union[UnitYT2UBuilder, UnitYNART2UBuilder, None]
@@ -632,18 +480,14 @@ def create_unity_model(
         )
 
     if config.use_gelu:
-        mt_model_builder: NllbBuilder = NllbWithGELUBuilder(
-            config.mt_model_config, device=device, dtype=dtype
-        )
+        nllb_factory: NllbFactory = NllbWithGELUFactory(config.nllb_config)
     else:
-        mt_model_builder = NllbBuilder(
-            config.mt_model_config, device=device, dtype=dtype
-        )
+        nllb_factory = NllbFactory(config.nllb_config)
 
     unity_builder = UnitYBuilder(
         config,
-        w2v2_encoder_builder,
-        mt_model_builder,
+        w2v2_encoder_factory,
+        nllb_factory,
         t2u_builder,
         prosody_encoder_builder,
         device=device,

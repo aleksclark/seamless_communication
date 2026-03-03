@@ -8,13 +8,15 @@ from typing import Literal, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from fairseq2.nn.normalization import LayerNorm
-from fairseq2.nn.padding import PaddingMask, apply_padding_mask, to_padding_mask
-from fairseq2.nn.projection import Linear
-from fairseq2.nn.transformer import create_standard_layer_norm
-from fairseq2.typing import DataType, Device
+from fairseq2.nn import BatchLayout
+from fairseq2.nn import Linear
+from seamless_communication.compat import create_standard_layer_norm
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch import Tensor
 from torch.nn import Conv1d, Dropout, Module, ReLU, Sequential
 
+from seamless_communication.compat import apply_seqs_layout
 from seamless_communication.models.unity.film import FiLM
 
 
@@ -52,19 +54,19 @@ class GaussianUpsampling(Module):
         self,
         x: Tensor,
         durations: Tensor,
-        padding_mask: Optional[PaddingMask] = None,
+        seqs_layout: Optional[BatchLayout] = None,
     ) -> Tuple[Tensor, Tensor]:
         """Upsample hidden states according to durations.
         Args:
             x (Tensor): Batched hidden state to be expanded (B, T_text, C).
             durations (Tensor): Batched token duration (B, T_text).
-            padding_mask (Tensor): Mask tensor (B, T_text).
+            seqs_layout (Tensor): Mask tensor (B, T_text).
         Returns:
             Tensor: Expanded hidden state (B, T_feat, C).
             Tensor: Output lengths (B,).
         """
         out_lens = durations.sum(dim=1)
-        y_mask = to_padding_mask(out_lens, max(out_lens))
+        y_mask = to_seqs_layout(out_lens, max(out_lens))
 
         B = durations.size(0)
         if durations.sum() == 0:
@@ -85,9 +87,9 @@ class GaussianUpsampling(Module):
         c = durations.cumsum(dim=-1) - durations / 2
         energy = -1 * self.delta * (t.unsqueeze(-1) - c.unsqueeze(1)) ** 2
 
-        if padding_mask is not None:
+        if seqs_layout is not None:
             energy = energy.masked_fill(
-                ~padding_mask.materialize().unsqueeze(1).repeat(1, T_feat, 1),
+                ~seqs_layout.materialize().unsqueeze(1).repeat(1, T_feat, 1),
                 -float("inf"),
             )
 
@@ -172,11 +174,11 @@ class VariancePredictor(Module):
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask] = None,
+        seqs_layout: Optional[BatchLayout] = None,
         film_cond_emb: Optional[Tensor] = None,
     ) -> Tensor:
         # Ensure that we do not leak padded positions in the convolution layer.
-        seqs = apply_padding_mask(seqs, padding_mask)
+        seqs = apply_seqs_layout(seqs, seqs_layout)
 
         # (N, S, M) -> (N, M, S)
         seqs = seqs.transpose(1, 2)
@@ -191,7 +193,7 @@ class VariancePredictor(Module):
 
         seqs = self.dropout_module(seqs)
 
-        seqs = apply_padding_mask(seqs, padding_mask)
+        seqs = apply_seqs_layout(seqs, seqs_layout)
 
         # (N, S, H) -> (N, H, S)
         seqs = seqs.transpose(1, 2)
@@ -206,11 +208,11 @@ class VariancePredictor(Module):
 
         seqs = self.dropout_module(seqs)
 
-        seqs = apply_padding_mask(seqs, padding_mask)
+        seqs = apply_seqs_layout(seqs, seqs_layout)
 
         if self.film is not None and film_cond_emb is not None:
             seqs = self.film(seqs, film_cond_emb)
-            seqs = apply_padding_mask(seqs, padding_mask)
+            seqs = apply_seqs_layout(seqs, seqs_layout)
 
         # (N, S, H) -> (N, S, 1) -> (N, S)
         seqs = self.proj(seqs).squeeze(dim=2)
@@ -275,27 +277,27 @@ class VarianceAdaptor(Module):
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
         durations: Optional[Tensor] = None,
         duration_factor: float = 1.0,
         min_duration: int = 0,
         film_cond_emb: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, PaddingMask, Tensor]:
+    ) -> Tuple[Tensor, BatchLayout, Tensor]:
         if self.duration_predictor is not None:
-            log_durations = self.duration_predictor(seqs, padding_mask, film_cond_emb)
+            log_durations = self.duration_predictor(seqs, seqs_layout, film_cond_emb)
             durations = torch.clamp(
                 torch.round((torch.exp(log_durations) - 1) * duration_factor).long(),
                 min=min_duration,
             )
-            # We need to apply the padding_mask again since we clamp by min_duration.
-            durations = apply_padding_mask(durations, padding_mask, pad_value=0)
+            # We need to apply the seqs_layout again since we clamp by min_duration.
+            durations = apply_seqs_layout(durations, seqs_layout, pad_value=0)
 
         assert durations is not None
 
         if self.pitch_predictor is not None:
-            pitch_out = self.pitch_predictor(seqs, padding_mask, film_cond_emb)
+            pitch_out = self.pitch_predictor(seqs, seqs_layout, film_cond_emb)
             if self.vuv_predictor is not None:
-                vuv_out = self.vuv_predictor(seqs, padding_mask, film_cond_emb)
+                vuv_out = self.vuv_predictor(seqs, seqs_layout, film_cond_emb)
                 pitch_out = pitch_out * (torch.sigmoid(vuv_out) >= 0.5)
 
             assert self.embed_pitch is not None
@@ -304,7 +306,7 @@ class VarianceAdaptor(Module):
                 seqs = seqs + pitch_embed
 
         if self.energy_predictor is not None:
-            energy_out = self.energy_predictor(seqs, padding_mask, film_cond_emb)
+            energy_out = self.energy_predictor(seqs, seqs_layout, film_cond_emb)
 
             assert self.embed_energy is not None
             energy_embed = self.embed_energy(energy_out.unsqueeze(1)).transpose(1, 2)
@@ -314,8 +316,8 @@ class VarianceAdaptor(Module):
                 seqs = seqs + energy_embed
 
         if isinstance(self.length_regulator, GaussianUpsampling):
-            seqs, seq_lens = self.length_regulator(seqs, durations, padding_mask)
+            seqs, seq_lens = self.length_regulator(seqs, durations, seqs_layout)
         else:
             seqs, seq_lens = self.length_regulator(seqs, durations)
 
-        return seqs, PaddingMask(seq_lens, batch_seq_len=seqs.size(1)), durations
+        return seqs, BatchLayout(seq_lens, batch_seq_len=seqs.size(1)), durations

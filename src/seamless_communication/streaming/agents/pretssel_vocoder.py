@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import torch
-from fairseq2.assets import asset_store
+from fairseq2.assets import get_asset_store
 from fairseq2.data.audio import WaveformToFbankConverter, WaveformToFbankInput
 from seamless_communication.models.generator.loader import load_pretssel_vocoder_model
 from seamless_communication.models.unity import load_gcmvn_stats
@@ -48,7 +48,7 @@ class PretsselVocoderAgent(NoUpdateTargetMixin, TextToSpeechAgent):  # type: ign
         )
         self.vocoder.eval()
 
-        vocoder_model_card = asset_store.retrieve_card(args.vocoder_name)
+        vocoder_model_card = get_asset_store().retrieve_card(args.vocoder_name)
         self.vocoder_sample_rate = vocoder_model_card.field("sample_rate").as_(int)
         self.vocoder_langs = vocoder_model_card.field("model_config").field("langs").as_list(str)
 

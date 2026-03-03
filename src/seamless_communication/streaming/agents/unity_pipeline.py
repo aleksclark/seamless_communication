@@ -10,7 +10,7 @@ from argparse import ArgumentParser, Namespace
 from typing import Any, Dict, List, Optional, Union
 
 import torch
-from fairseq2.assets import asset_store
+from fairseq2.assets import get_asset_store
 from seamless_communication.inference.translator import Modality, Translator
 from seamless_communication.models.generator.loader import load_pretssel_vocoder_model
 from seamless_communication.models.generator.vocoder import PretsselVocoder
@@ -122,7 +122,7 @@ class UnitYPipelineMixin:
         else:
             unit_tokenizer = load_unity_unit_tokenizer(args.unity_model_name)
 
-        asset_card = asset_store.retrieve_card(args.unity_model_name)
+        asset_card = get_asset_store().retrieve_card(args.unity_model_name)
         asset_card.field("model_config").set(unity_config)
 
         logger.info(

@@ -8,15 +8,16 @@ from typing import Iterable, List, Optional, Tuple, final
 
 import torch
 from fairseq2.nn.incremental_state import IncrementalStateBag
-from fairseq2.nn.module_list import ModuleList
+from torch.nn import ModuleList
 from fairseq2.nn.normalization import LayerNorm
-from fairseq2.nn.padding import PaddingMask
-from fairseq2.nn.transformer import (
-    AttentionMaskFactory,
-    CausalAttentionMaskFactory,
-    create_standard_layer_norm,
+from fairseq2.nn import BatchLayout
+from fairseq2.models.transformer import (
+    AttentionBias,
+    CausalAttentionBias,
 )
-from fairseq2.typing import DataType, Device, finaloverride
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
+from typing_extensions import override
 from torch import Tensor
 from torch.nn import Module
 
@@ -30,7 +31,7 @@ class MonotonicTransformerDecoder(Module):
     """Represents a Monotonic Transformer decoder."""
 
     model_dim: int
-    self_attn_mask_factory: AttentionMaskFactory
+    self_attn_mask_factory: AttentionBias
     layers: ModuleList
     layer_norm: LayerNorm
 
@@ -54,7 +55,7 @@ class MonotonicTransformerDecoder(Module):
 
         self.model_dim = layer_list[0].model_dim
 
-        self.self_attn_mask_factory = CausalAttentionMaskFactory()
+        self.self_attn_mask_factory = CausalAttentionBias()
 
         self.layers = layer_list
 
@@ -62,16 +63,16 @@ class MonotonicTransformerDecoder(Module):
             self.model_dim, device=device, dtype=dtype
         )
 
-    @finaloverride
+    @override
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
         encoder_output: Optional[Tensor] = None,
-        encoder_padding_mask: Optional[PaddingMask] = None,
+        encoder_seqs_layout: Optional[BatchLayout] = None,
         *,
         state_bag: Optional[IncrementalStateBag] = None,
-    ) -> Tuple[Tensor, Optional[PaddingMask], Tensor]:
+    ) -> Tuple[Tensor, Optional[BatchLayout], Tensor]:
         self_attn_mask = self.self_attn_mask_factory(
             seqs, keys=seqs, training=self.training, state_bag=state_bag
         )
@@ -79,12 +80,12 @@ class MonotonicTransformerDecoder(Module):
         p_choose_list: List[Tensor] = []
 
         for layer in self.layers.drop_iter():
-            seqs, padding_mask, p_choose = layer(
+            seqs, seqs_layout, p_choose = layer(
                 seqs,
-                padding_mask,
+                seqs_layout,
                 self_attn_mask,
                 encoder_output,
-                encoder_padding_mask,
+                encoder_seqs_layout,
                 state_bag=state_bag,
             )
             p_choose_list.append(p_choose)
@@ -95,4 +96,4 @@ class MonotonicTransformerDecoder(Module):
 
         p_choose = p_choose.flatten(0, 1)
 
-        return seqs, padding_mask, p_choose
+        return seqs, seqs_layout, p_choose

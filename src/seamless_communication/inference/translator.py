@@ -11,16 +11,18 @@ from typing import List, Optional, Tuple, Union, cast
 
 import torch
 import torch.nn as nn
-from fairseq2.assets import asset_store
+from fairseq2.assets import get_asset_store
 from fairseq2.assets.card import AssetCard
-from fairseq2.data import Collater, SequenceData, StringLike
+from fairseq2.data import Collater, SequenceData
 from fairseq2.data.audio import AudioDecoder, WaveformToFbankConverter
-from fairseq2.data.text import TextTokenizer
-from fairseq2.memory import MemoryBlock
-from fairseq2.nn.padding import PaddingMask, get_seqs_and_padding_mask
-from fairseq2.typing import DataType, Device
+from fairseq2.data.tokenizers import Tokenizer as TextTokenizer
+from fairseq2.data._memory import MemoryBlock
+from fairseq2.nn import BatchLayout
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch import Tensor
 
+from seamless_communication.compat import get_seqs_and_seqs_layout
 from seamless_communication.inference.generator import (
     SequenceGeneratorOptions,
     UnitYGenerator,
@@ -33,7 +35,7 @@ from seamless_communication.models.unity import (
     load_unity_model,
     load_unity_text_tokenizer,
     load_unity_unit_tokenizer,
-    unity_archs,
+    get_unity_config,
 )
 from seamless_communication.models.vocoder import load_vocoder_model
 from seamless_communication.toxicity import (
@@ -90,12 +92,12 @@ class Translator(nn.Module):
         super().__init__()
 
         if isinstance(model_name_or_card, str):
-            model_name_or_card = asset_store.retrieve_card(model_name_or_card)
+            model_name_or_card = get_asset_store().retrieve_card(model_name_or_card)
 
         assert isinstance(model_name_or_card, AssetCard)
 
         if input_modality or output_modality:
-            unity_config = unity_archs.get_config(
+            unity_config = get_unity_config(
                 model_name_or_card.field("model_arch").as_(str)
             )
             # Skip loading the text encoder.
@@ -160,7 +162,7 @@ class Translator(nn.Module):
         text_tokenizer: TextTokenizer,
         unit_tokenizer: Optional[UnitTokenizer],
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
         input_modality: Modality,
         output_modality: Modality,
         tgt_lang: str,
@@ -169,7 +171,7 @@ class Translator(nn.Module):
         unit_generation_ngram_filtering: bool = False,
         duration_factor: float = 1.0,
         prosody_encoder_input: Optional[SequenceData] = None,
-    ) -> Tuple[List[StringLike], Optional[Tensor]]:
+    ) -> Tuple[List[str], Optional[Tensor]]:
         # We disregard unit generations opts for the NAR T2U decoder.
         if output_modality != Modality.SPEECH or isinstance(
             model.t2u_model, UnitYNART2UModel
@@ -187,7 +189,7 @@ class Translator(nn.Module):
 
         return generator(
             seqs,
-            padding_mask,
+            seqs_layout,
             input_modality.value,
             output_modality.value,
             ngram_filtering=unit_generation_ngram_filtering,
@@ -226,8 +228,8 @@ class Translator(nn.Module):
         unit_generation_ngram_filtering: bool = False,
         duration_factor: float = 1.0,
         prosody_encoder_input: Optional[SequenceData] = None,
-        src_text: Optional[StringLike] = None,
-    ) -> Tuple[List[StringLike], Optional[BatchedSpeechOutput]]:
+        src_text: Optional[str] = None,
+    ) -> Tuple[List[str], Optional[BatchedSpeechOutput]]:
         """
         The main method used to perform inference on all tasks.
 
@@ -305,7 +307,7 @@ class Translator(nn.Module):
 
         assert isinstance(self.model, UnitYModel)
 
-        seqs, padding_mask = get_seqs_and_padding_mask(src)
+        seqs, seqs_layout = get_seqs_and_seqs_layout(src)
 
         if text_generation_opts is None:
             text_generation_opts = SequenceGeneratorOptions(
@@ -321,7 +323,7 @@ class Translator(nn.Module):
             self.text_tokenizer,
             self.unit_tokenizer,
             seqs,
-            padding_mask,
+            seqs_layout,
             input_modality,
             output_modality,
             tgt_lang,
@@ -397,10 +399,10 @@ class Translator(nn.Module):
             speech_units = []
             for i in range(len(units)):
                 assert self.model.t2u_model is not None
-                unit_padding_mask = (
+                unit_seqs_layout = (
                     units[i] != self.model.t2u_model.target_vocab_info.pad_idx
                 )
-                u = units[i][unit_padding_mask]
+                u = units[i][unit_seqs_layout]
                 speech_units.append(u.tolist())
 
             if self.vocoder is not None:

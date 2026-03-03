@@ -4,46 +4,34 @@
 # This source code is licensed under the license found in the
 # MIT_LICENSE file in the root directory of this source tree.
 
+from pathlib import Path
 from typing import Optional, Union, final
 
 from fairseq2.assets import (
     AssetDownloadManager,
     AssetStore,
-    asset_store,
-    download_manager,
+    get_asset_store,
+    get_asset_download_manager,
 )
 from fairseq2.assets.card import AssetCard
-from fairseq2.data.text import (
-    SentencePieceDecoder,
-    SentencePieceEncoder,
-    SentencePieceModel,
-    TextTokenDecoder,
-    TextTokenEncoder,
-    TextTokenizer,
-    vocab_info_from_sentencepiece,
-)
-from fairseq2.data.typing import PathLike
-from fairseq2.typing import Device, finaloverride
+from fairseq2.data.tokenizers.sentencepiece import BasicSentencePieceTokenizer as SentencePieceTokenizer
+from fairseq2.data.tokenizers.sentencepiece import SentencePieceEncoder
+from fairseq2.device import Device
+from typing_extensions import override
 
 
 @final
-class CharTokenizer(TextTokenizer):
+class CharTokenizer(SentencePieceTokenizer):
     """A character-level tokenizer used during non-autoregressive T2U decoding."""
 
-    model: SentencePieceModel
-
-    def __init__(self, pathname: PathLike) -> None:
+    def __init__(self, path: Path) -> None:
         """
         :param pathname:
             The pathname of the SentencePiece model file.
         """
-        self.model = SentencePieceModel(pathname)
+        super().__init__(path)
 
-        vocab_info = vocab_info_from_sentencepiece(self.model)
-
-        super().__init__(vocab_info)
-
-    @finaloverride
+    @override
     def create_encoder(
         self,
         task: Optional[str] = None,
@@ -51,23 +39,9 @@ class CharTokenizer(TextTokenizer):
         mode: Optional[str] = None,
         device: Optional[Device] = None,
         pin_memory: bool = False,
-    ) -> TextTokenEncoder:
+    ) -> SentencePieceEncoder:
         """Creates a character level encoder."""
-        return SentencePieceEncoder(
-            self.model,
-            device=device,
-            pin_memory=pin_memory,
-        )
-
-    @finaloverride
-    def create_raw_encoder(
-        self, *, device: Optional[Device] = None, pin_memory: bool = False
-    ) -> TextTokenEncoder:
         return SentencePieceEncoder(self.model, device=device, pin_memory=pin_memory)
-
-    @finaloverride
-    def create_decoder(self) -> TextTokenDecoder:
-        return SentencePieceDecoder(self.model)
 
 
 class UnitYCharTokenizerLoader:
@@ -99,7 +73,7 @@ class UnitYCharTokenizerLoader:
         if isinstance(model_name_or_card, AssetCard):
             card = model_name_or_card
         else:
-            card = self.asset_store.retrieve_card(model_name_or_card)
+            card = self.get_asset_store().retrieve_card(model_name_or_card)
 
         uri = card.field("char_tokenizer").as_uri()
 
@@ -110,4 +84,4 @@ class UnitYCharTokenizerLoader:
         return CharTokenizer(pathname)
 
 
-load_unity_char_tokenizer = UnitYCharTokenizerLoader(asset_store, download_manager)
+load_unity_char_tokenizer = UnitYCharTokenizerLoader(get_asset_store(), get_asset_download_manager())

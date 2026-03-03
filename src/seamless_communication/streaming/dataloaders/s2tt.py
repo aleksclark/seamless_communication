@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from fairseq2.data.audio import AudioDecoder
 from fairseq2.data.data_pipeline import Collater, DataPipeline, FileMapper
 from fairseq2.data.text.converters import StrSplitter
-from fairseq2.data.text.text_reader import read_text
+from fairseq2.data.text import read_text
 from simuleval.data.dataloader import register_dataloader
 from simuleval.data.dataloader.dataloader import IterableDataloader
 from simuleval.data.dataloader.s2t_dataloader import SpeechToTextDataloader

@@ -8,16 +8,18 @@ from typing import List
 import torch
 from torch.nn import Module
 
-from fairseq2.typing import DataType, Device
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 
-from fairseq2.assets import asset_store
+from fairseq2.assets import get_asset_store
 from fairseq2.data import (
     Collater,
     SequenceData,
-    VocabularyInfo,
 )
-from fairseq2.nn.padding import get_seqs_and_padding_mask
+from fairseq2.data.tokenizers import VocabularyInfo
+from fairseq2.nn import BatchLayout
 
+from seamless_communication.compat import get_seqs_and_seqs_layout
 from seamless_communication.inference import BatchedSpeechOutput
 from seamless_communication.models.generator.loader import load_pretssel_vocoder_model
 
@@ -45,7 +47,7 @@ class PretsselGenerator(Module):
         )
         self.pretssel_model.eval()
 
-        vocoder_model_card = asset_store.retrieve_card(pretssel_name_or_card)
+        vocoder_model_card = get_asset_store().retrieve_card(pretssel_name_or_card)
         self.output_sample_rate = vocoder_model_card.field("sample_rate").as_(int)
 
         self.vocab_info = vocab_info
@@ -80,8 +82,8 @@ class PretsselGenerator(Module):
         speech_units = self.unit_collate(units_batch)
         durations = self.duration_collate(durations)["seqs"]
 
-        units_tensor, unit_padding_mask = get_seqs_and_padding_mask(speech_units)
-        prosody_input_seqs, prosody_padding_mask = get_seqs_and_padding_mask(
+        units_tensor, unit_seqs_layout = get_seqs_and_seqs_layout(speech_units)
+        prosody_input_seqs, prosody_seqs_layout = get_seqs_and_seqs_layout(
             prosody_encoder_input
         )
 
@@ -89,8 +91,8 @@ class PretsselGenerator(Module):
             units_tensor,
             tgt_lang,
             prosody_input_seqs,
-            padding_mask=unit_padding_mask,
-            prosody_padding_mask=prosody_padding_mask,
+            seqs_layout=unit_seqs_layout,
+            prosody_seqs_layout=prosody_seqs_layout,
             durations=durations,
         )
         return BatchedSpeechOutput(

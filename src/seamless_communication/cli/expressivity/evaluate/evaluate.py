@@ -14,14 +14,16 @@ from typing import Optional
 import pandas as pd
 import torch
 import torchaudio
-from fairseq2.data import Collater, DataPipeline, FileMapper
+from fairseq2.data import Collater
+from fairseq2.data.data_pipeline import DataPipeline, FileMapper
 from fairseq2.data.audio import (
     AudioDecoder,
     WaveformToFbankConverter,
     WaveformToFbankOutput,
 )
 from fairseq2.data.text import StrSplitter, read_text
-from fairseq2.typing import DataType, Device
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch import Tensor
 from tqdm import tqdm
 

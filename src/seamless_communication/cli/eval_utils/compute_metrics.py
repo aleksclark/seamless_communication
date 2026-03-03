@@ -11,7 +11,7 @@ from typing import Optional, Tuple, Union
 
 import pandas as pd
 import whisper
-from fairseq2.typing import Device
+from fairseq2.device import Device
 from jiwer import cer, wer
 from sacrebleu.metrics.base import Score, Signature
 from sacrebleu.metrics.bleu import BLEU

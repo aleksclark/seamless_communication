@@ -13,11 +13,10 @@ from fairseq2.assets import (
     AssetCard,
     AssetDownloadManager,
     AssetStore,
-    asset_store as base_asset_store,
-    download_manager as base_download_manager,
+    get_asset_store,
+    get_asset_download_manager,
 )
-from fairseq2.data import StringLike
-from fairseq2.data.text import SentencePieceEncoder, SentencePieceModel
+from fairseq2.data.tokenizers.sentencepiece import SentencePieceEncoder, SentencePieceModel
 
 
 class ETOXBadWordChecker:
@@ -116,7 +115,7 @@ class ETOXBadWordChecker:
 
     @staticmethod
     def _contains_tokens(
-        text_tokens: List[StringLike], word_tokens: List[StringLike]
+        text_tokens: List[str], word_tokens: List[str]
     ) -> bool:
         for i in range(len(text_tokens) - len(word_tokens) + 1):
             for j in range(len(word_tokens)):
@@ -147,7 +146,7 @@ class ETOXBadWordCheckerLoader:
         if isinstance(model_name_or_card, AssetCard):
             card = model_name_or_card
         else:
-            card = self.asset_store.retrieve_card(model_name_or_card)
+            card = self.get_asset_store().retrieve_card(model_name_or_card)
 
         bad_words: Dict[str, List[str]] = {}
 
@@ -207,6 +206,6 @@ class ETOXBadWordCheckerLoader:
 
 
 load_etox_bad_word_checker = ETOXBadWordCheckerLoader(
-    base_asset_store,
-    base_download_manager,
+    get_asset_store(),
+    get_asset_download_manager(),
 )

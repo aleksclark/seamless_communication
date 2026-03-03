@@ -6,27 +6,32 @@
 
 from pathlib import Path
 
-from fairseq2.assets import InProcAssetMetadataProvider, asset_store
+from fairseq2.assets import get_asset_store
+from fairseq2.assets.metadata_provider import load_in_memory_asset_metadata
 
 
 def add_gated_assets(model_dir: Path) -> None:
-    asset_store.env_resolvers.append(lambda: "gated")
+    store = get_asset_store()
+
+    if "gated" not in store._envs:
+        store._envs.append("gated")
 
     model_dir = model_dir.resolve()
 
     gated_metadata = [
         {
             "name": "seamless_expressivity@gated",
-            "checkpoint": model_dir.joinpath("m2m_expressive_unity.pt"),
+            "checkpoint": str(model_dir.joinpath("m2m_expressive_unity.pt")),
         },
         {
             "name": "vocoder_pretssel@gated",
-            "checkpoint": model_dir.joinpath("pretssel_melhifigan_wm.pt"),
+            "checkpoint": str(model_dir.joinpath("pretssel_melhifigan_wm.pt")),
         },
         {
             "name": "vocoder_pretssel_16khz@gated",
-            "checkpoint": model_dir.joinpath("pretssel_melhifigan_wm-16khz.pt"),
+            "checkpoint": str(model_dir.joinpath("pretssel_melhifigan_wm-16khz.pt")),
         },
     ]
 
-    asset_store.metadata_providers.append(InProcAssetMetadataProvider(gated_metadata))
+    provider = load_in_memory_asset_metadata("gated_assets", gated_metadata)
+    store._metadata_providers.append(provider)

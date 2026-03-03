@@ -6,15 +6,16 @@
 
 from pathlib import Path
 
-from fairseq2.assets import FileAssetMetadataProvider, asset_store
+from fairseq2.composition.assets import register_file_assets
+from fairseq2.runtime.dependency import get_dependency_resolver
 
 __version__ = "0.1.0"
 
 
-def _update_asset_store() -> None:
+def _register_cards() -> None:
     cards_dir = Path(__file__).parent.joinpath("cards")
+    container = get_dependency_resolver()
+    register_file_assets(container, cards_dir)
 
-    asset_store.metadata_providers.append(FileAssetMetadataProvider(cards_dir))
 
-
-_update_asset_store()
+_register_cards()

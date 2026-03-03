@@ -11,7 +11,7 @@ from typing import Tuple
 
 import torch
 import torchaudio
-from fairseq2.generation import NGramRepeatBlockProcessor
+from fairseq2.generation.step_processor import NGramRepeatBlockProcessor
 
 from seamless_communication.inference import SequenceGeneratorOptions, Translator
 
@@ -24,16 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def add_inference_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    parser.add_argument(
-        "--task", 
-        type=str, 
-        choices=["ASR", "S2ST", "S2TT"],
-        help=(
-            "* `ASR` -- automatic speech recognition (transcription);"
-            "* `S2ST` -- speech to speech translation;"
-            "* `S2TT` -- speech to text translation;"
-        )
-    )
+    parser.add_argument("--task", type=str, help="Task type")
     parser.add_argument(
         "--tgt_lang", type=str, help="Target language to translate/transcribe into."
     )

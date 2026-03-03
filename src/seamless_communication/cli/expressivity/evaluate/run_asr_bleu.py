@@ -8,7 +8,7 @@ from fire import Fire
 from seamless_communication.cli.eval_utils.compute_metrics import (
     compute_quality_metrics,
 )
-from fairseq2.typing import Device
+from fairseq2.device import Device
 from pathlib import Path
 
 

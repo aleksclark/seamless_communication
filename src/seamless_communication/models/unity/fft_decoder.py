@@ -6,11 +6,14 @@
 
 from typing import Iterable, Optional, Tuple, final
 
-from fairseq2.nn.module_list import ModuleList
+from torch.nn import ModuleList
 from fairseq2.nn.normalization import LayerNorm
-from fairseq2.nn.padding import PaddingMask
-from fairseq2.nn.transformer import TransformerNormOrder, create_standard_layer_norm
-from fairseq2.typing import DataType, Device, finaloverride
+from fairseq2.nn import BatchLayout
+from fairseq2.models.transformer import TransformerNormOrder
+from seamless_communication.compat import create_standard_layer_norm
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
+from typing_extensions import override
 from torch import Tensor
 from torch.nn import Module
 
@@ -61,20 +64,20 @@ class FeedForwardTransformer(Module):
 
         self.norm_order = norm_order
 
-    @finaloverride
+    @override
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
         film_cond_emb: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Optional[PaddingMask]]:
+    ) -> Tuple[Tensor, Optional[BatchLayout]]:
         for layer in self.layers.drop_iter():
-            seqs, padding_mask = layer(seqs, padding_mask, film_cond_emb=film_cond_emb)
+            seqs, seqs_layout = layer(seqs, seqs_layout, film_cond_emb=film_cond_emb)
 
         if self.layer_norm is not None:
             seqs = self.layer_norm(seqs)
 
-        return seqs, padding_mask
+        return seqs, seqs_layout
 
     def extra_repr(self) -> str:
         """:meta private:"""

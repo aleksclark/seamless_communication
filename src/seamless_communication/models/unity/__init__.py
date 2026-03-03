@@ -9,8 +9,9 @@ from seamless_communication.models.unity.builder import UnitYConfig as UnitYConf
 from seamless_communication.models.unity.builder import (
     create_unity_model as create_unity_model,
 )
-from seamless_communication.models.unity.builder import unity_arch as unity_arch
-from seamless_communication.models.unity.builder import unity_archs as unity_archs
+from seamless_communication.models.unity.builder import register_unity_arch as unity_arch
+from seamless_communication.models.unity.builder import UNITY_ARCHS as unity_archs
+from seamless_communication.models.unity.builder import get_unity_config as get_unity_config
 from seamless_communication.models.unity.char_tokenizer import (
     CharTokenizer as CharTokenizer,
 )

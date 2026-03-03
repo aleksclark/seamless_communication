@@ -6,10 +6,11 @@
 
 import math
 import warnings
-from typing import Any, Dict, List, Literal, Optional, Tuple, TypeVar
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import torch
-from fairseq2.typing import DataType, Device
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch.nn import (
     ELU,
     LSTM,

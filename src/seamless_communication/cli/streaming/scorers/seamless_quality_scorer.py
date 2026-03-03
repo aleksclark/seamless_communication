@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import pandas
-from fairseq2.typing import Device
+from fairseq2.device import Device
 from seamless_communication.cli.eval_utils import compute_quality_metrics
 from simuleval.evaluator.instance import LogInstance
 from simuleval.evaluator.scorers.quality_scorer import (

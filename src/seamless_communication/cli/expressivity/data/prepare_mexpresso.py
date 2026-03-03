@@ -22,7 +22,8 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List, Optional, Tuple
 
-from fairseq2.assets import asset_store, download_manager
+from fairseq2.assets import get_asset_store
+from fairseq2.assets import get_asset_download_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -161,7 +162,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    mexpresso_card = asset_store.retrieve_card("mexpresso_text")
+    mexpresso_card = get_asset_store().retrieve_card("mexpresso_text")
     mexpresso_root_path = download_manager.download_dataset(
         mexpresso_card.field("uri").as_uri(),
         "mExpresso_text",
@@ -176,7 +177,7 @@ def main() -> None:
         )
         en_expresso_path = Path(args.existing_expresso_root)
     else:
-        en_expresso_card = asset_store.retrieve_card("expresso")
+        en_expresso_card = get_asset_store().retrieve_card("expresso")
         en_expresso_root_path = download_manager.download_dataset(
             en_expresso_card.field("uri").as_uri(),
             "Expresso",

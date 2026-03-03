@@ -12,8 +12,8 @@ from urllib.request import urlretrieve
 import pytest
 import torch
 from fairseq2.data.audio import AudioDecoder, AudioDecoderOutput
-from fairseq2.memory import MemoryBlock
-from fairseq2.typing import Device
+from fairseq2.data._memory import MemoryBlock
+from fairseq2.device import Device
 
 import tests.common
 

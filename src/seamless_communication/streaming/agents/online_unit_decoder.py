@@ -104,7 +104,7 @@ class NARUnitYUnitDecoderAgent(GenericAgent):  # type: ignore
 
         model_output, _, durations = self.model(
             text_decoder_output=states.source,
-            text_decoder_padding_mask=None,
+            text_decoder_seqs_layout=None,
             text_seqs=states.source_indices,
             duration_factor=self.d_factor,
         )

@@ -6,29 +6,24 @@
 
 
 import logging
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-from tqdm import tqdm
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
-from fairseq2.data import VocabularyInfo
-from fairseq2.models.sequence import SequenceModelOutput
-from fairseq2.nn.padding import PaddingMask
-from fairseq2.optim.lr_scheduler import MyleLR
-from fairseq2.typing import Device
-from torch.optim import AdamW
+from fairseq2.data.tokenizers import VocabularyInfo
+
+from fairseq2.nn import BatchLayout
+from fairseq2.optim.lr_schedulers import MyleLR
+from fairseq2.device import Device
+from torch.optim import Adam
 
 from seamless_communication.cli.m4t.finetune import dataloader, dist_utils
-from seamless_communication.models.unity import (
-    UnitYModel,
-    UnitYT2UModel,
-)
+from seamless_communication.models.unity import UnitYModel
 
 logger = logging.getLogger(__name__)
 
@@ -41,17 +36,11 @@ class FinetuneMode(Enum):
 
 @dataclass
 class FinetuneParams:
-    model_name: str
-    """Model name of model being finetuned."""
-    
     save_model_path: Path
     """Path were to save finetuned model."""
 
     finetune_mode: FinetuneMode = FinetuneMode.TEXT_TO_SPEECH
     """Allows to freeze S2T or T2U part of the model"""
-    
-    float_dtype: torch.dtype = torch.float16
-    """Float Dtype"""
 
     max_epochs: int = 10
     """ Maximum number of trainign epochs"""
@@ -91,61 +80,52 @@ class UnitYFinetuneWrapper(nn.Module):
 
     def __init__(self, model: UnitYModel, mode: FinetuneMode, device: Device):
         super().__init__()
+        assert model.t2u_model is not None
         self.model: UnitYModel = model
         self.freeze_s2t: bool = mode == FinetuneMode.TEXT_TO_SPEECH
         self.freeze_t2u: bool = mode == FinetuneMode.SPEECH_TO_TEXT
-        logger.info(f"Freeze s2t: {self.freeze_s2t}, freeze t2u: {self.freeze_t2u}")
         self.device = device
 
     def forward(
         self, batch: dataloader.MultimodalSeqsBatch
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        assert self.model.t2u_model is not None
         dummy_context = contextmanager(lambda: iter([None]))()
         with torch.no_grad() if self.freeze_s2t else dummy_context:  # type:ignore
             assert batch.speech_to_text.src_tokens is not None
             seqs = batch.speech_to_text.src_tokens.to(self.device)
-            assert batch.speech_to_text.src_lengths is not None
             seq_lens = batch.speech_to_text.src_lengths.to(self.device)
-            speech_encoder_out, speech_encoder_padding_mask = self.model.encode_speech(
-                seqs=seqs, padding_mask=PaddingMask(seq_lens, seqs.size(1))
+            speech_encoder_out, speech_encoder_seqs_layout = self.model.encode_speech(
+                seqs=seqs, seqs_layout=BatchLayout(seq_lens, seqs.size(1))
             )
             assert batch.speech_to_text.prev_output_tokens is not None
             seqs = batch.speech_to_text.prev_output_tokens.to(self.device)
-            assert batch.speech_to_text.target_lengths is not None
             seq_lens = batch.speech_to_text.target_lengths.to(self.device)
-            text_decoder_out, text_decoder_padding_mask = self.model.decode(
+            text_decoder_out, text_decoder_seqs_layout = self.model.decode(
                 seqs=seqs,
-                padding_mask=PaddingMask(seq_lens, seqs.size(1)),
+                seqs_layout=BatchLayout(seq_lens, seqs.size(1)),
                 encoder_output=speech_encoder_out,
-                encoder_padding_mask=speech_encoder_padding_mask,
+                encoder_seqs_layout=speech_encoder_seqs_layout,
             )
-            assert self.model.final_proj is not None
             text_logits = self.model.final_proj(text_decoder_out)
-        if self.freeze_t2u:
+        if batch.text_to_units.prev_output_tokens is None:
             return (text_logits, None)
-        assert self.model.t2u_model is not None
-        assert batch.text_to_units.prev_output_tokens is not None
         dummy_context = contextmanager(lambda: iter([None]))()
         with torch.no_grad() if self.freeze_t2u else dummy_context:  # type:ignore
-            if not isinstance(self.model.t2u_model, UnitYT2UModel):
-                raise NotImplementedError(
-                    "T2U finetuning implemented only for UnitYT2UModel"
-                )
             (
                 unit_encoder_out,
-                unit_encoder_padding_mask,
+                unit_encoder_seqs_layout,
             ) = self.model.t2u_model.encode(
-                seqs=text_decoder_out,
-                padding_mask=text_decoder_padding_mask,
+                text_decoder_out,
+                text_decoder_seqs_layout,
             )
             seqs = batch.text_to_units.prev_output_tokens.to(self.device)
-            assert batch.text_to_units.target_lengths is not None
             seq_lens = batch.text_to_units.target_lengths.to(self.device)
-            unit_decoder_out, _ = self.model.t2u_model.decode(
+            unit_decoder_out = self.model.t2u_model.decode(
                 seqs=seqs,
-                padding_mask=PaddingMask(seq_lens, seqs.size(1)),
+                seqs_layout=BatchLayout(seq_lens, seqs.size(1)),
                 encoder_output=unit_encoder_out,
-                encoder_padding_mask=unit_encoder_padding_mask,
+                encoder_seqs_layout=unit_encoder_seqs_layout,
             )
             unit_logits = self.model.t2u_model.final_proj(unit_decoder_out)
 
@@ -159,7 +139,7 @@ class CalcLoss:
         self,
         label_smoothing: float,
         s2t_vocab_info: VocabularyInfo,
-        t2u_vocab_info: Optional[VocabularyInfo],
+        t2u_vocab_info: VocabularyInfo,
     ):
         self.label_smoothing = label_smoothing
         self.s2t_vocab_info = s2t_vocab_info
@@ -172,31 +152,25 @@ class CalcLoss:
         unit_logits: Optional[torch.Tensor],
     ) -> torch.Tensor:
         assert batch.speech_to_text.target_lengths is not None
-        prefix_skip_len = 1  # language tokens to skip
-        s2t_numel = torch.sum(batch.speech_to_text.target_lengths - prefix_skip_len).to(
+        s2t_numel = torch.sum(batch.speech_to_text.target_lengths).to(
             text_logits.device
         )
-        assert batch.speech_to_text.target_tokens is not None
         s2t_loss = SequenceModelOutput(
-            logits=text_logits, vocab_info=self.s2t_vocab_info
+            text_logits, self.s2t_vocab_info.pad_idx
         ).compute_loss(
             targets=batch.speech_to_text.target_tokens.to(text_logits.device),
-            ignore_prefix_size=prefix_skip_len,
+            ignore_prefix_size=1,
             label_smoothing=self.label_smoothing,
         )
         if unit_logits is None:
             return s2t_loss / s2t_numel
         assert batch.text_to_units.target_lengths is not None
-        s2u_numel = torch.sum(batch.text_to_units.target_lengths - prefix_skip_len).to(
-            unit_logits.device
-        )
-        assert batch.text_to_units.target_tokens is not None
-        assert self.t2u_vocab_info is not None
+        s2u_numel = torch.sum(batch.text_to_units.target_lengths).to(unit_logits.device)
         s2u_loss = SequenceModelOutput(
-            logits=unit_logits, vocab_info=self.t2u_vocab_info
+            logits=unit_logits, vocab_info=self.t2u_vocab_info.pad_idx
         ).compute_loss(
             targets=batch.text_to_units.target_tokens.to(unit_logits.device),
-            ignore_prefix_size=prefix_skip_len,
+            ignore_prefix_size=1,
             label_smoothing=self.label_smoothing,
         )
         return s2t_loss / s2t_numel + s2u_loss / s2u_numel
@@ -249,34 +223,28 @@ class UnitYFinetune:
         params: FinetuneParams,
         train_data_loader: dataloader.UnitYDataLoader,
         eval_data_loader: Optional[dataloader.UnitYDataLoader] = None,
-        freeze_modules: Optional[List[Union[str, torch.nn.Module]]] = None
     ):
         self.params = params
+
+        assert model.t2u_model is not None
         self.calc_loss = CalcLoss(
             label_smoothing=self.params.label_smoothing,
             s2t_vocab_info=model.target_vocab_info,
-            t2u_vocab_info=model.t2u_model.target_vocab_info
-            if model.t2u_model is not None
-            else None,
+            t2u_vocab_info=model.t2u_model.target_vocab_info,
         )
-        
         self.model = self._wrap_model_for_trainining(model=model)
-        if freeze_modules:
-            self._freeze_modules(freeze_modules)
-        
         self.train_data_loader = train_data_loader
         self.eval_data_loader = eval_data_loader
-        
-        self.grad_scaler = torch.cuda.amp.GradScaler()  # type: ignore
-        self.optimizer = AdamW(
+        self.optimizer = Adam(
             params=self.model.parameters(),
             lr=self.params.learning_rate,
             betas=(0.9, 0.98),
             eps=1e-08,
             maximize=False,
             weight_decay=0.0,
-            fused=(self.params.device.type == "cuda"),
+            fused=True,
         )
+        self.grad_scaler = torch.cuda.amp.GradScaler()
         self.lr_scheduler = MyleLR(
             optimizer=self.optimizer,
             num_warmup_steps=self.params.warmup_steps,
@@ -289,7 +257,6 @@ class UnitYFinetune:
         self.patience_left: int = self.params.patience
         self.best_eval_loss: Optional[float] = None
         self.is_best_state: bool = False
-        torch.set_float32_matmul_precision("high")
 
     def _reset_stats(self) -> None:
         self.train_loss_hist.reset()
@@ -305,20 +272,11 @@ class UnitYFinetune:
         )
         if not dist_utils.is_dist_initialized():
             return wrapped_model
-        find_unused = self.params.finetune_mode == FinetuneMode.TEXT_TO_SPEECH
         return nn.parallel.DistributedDataParallel(
             wrapped_model,
             device_ids=[dist_utils.get_local_rank()],
-            find_unused_parameters=find_unused,
+            find_unused_parameters=True,
         )
-        
-    def _freeze_modules(self, frozen_modules: List[str] = []) -> None:
-        for icecube in frozen_modules:
-            for (name, module) in self.model.named_modules():
-                if name.startswith(icecube):
-                    logger.info(f"Freezing Module: {name}")
-                    for param in module.parameters():
-                        param.requires_grad = False
 
     def _update_eval_stats(self, eval_loss: float) -> None:
         self.is_best_state = (
@@ -335,26 +293,24 @@ class UnitYFinetune:
             f"patience_steps_left={self.patience_left}"
         )
 
-    @torch.no_grad()
-    def _eval_model(self, n_batches: int) -> None:
+    def _eval_model(self) -> None:
         """Calc avg loss on eval dataset and update evaluation stats"""
         if self.eval_data_loader is None:
             return
-        logger.info(f"Evaluation Step {self.update_idx // self.params.eval_steps}...")
+        logger.info("Run evaluation")
         loss_hist = LossCollector(device=self.params.device)
         self.model.eval()
-        for batch in self.eval_data_loader.get_dataloader():
-            if n_batches == 0:
-                break
-            assert batch.speech_to_text.src_tokens is not None
-            with torch.autocast(device_type=self.params.device.type, dtype=self.params.float_dtype):
+        with torch.no_grad():
+            for batch in self.eval_data_loader.get_dataloader():
+                assert batch.speech_to_text.src_tokens is not None
                 loss = self.calc_loss(batch, *self.model(batch))
-            if loss.isnan():
-                logger.warning("Eval batch loss value is NaN, skipping")
-                continue
-            del batch  # force memory release
-            loss_hist.update(1, loss.item())
-            n_batches -= 1
+                if loss.isnan():
+                    logger.warning("Eval loss value is NaN, setting to inf")
+                    loss_val = float("Inf")
+                else:
+                    loss_val = loss.item()
+                del batch  # force memory release
+                loss_hist.update(1, loss_val)
         eval_loss = loss_hist.reduce()
         self._update_eval_stats(eval_loss)
 
@@ -370,70 +326,49 @@ class UnitYFinetune:
                 f"last lr={self.lr_scheduler.get_last_lr()[0]:.2E}"
             )
 
-    def _train_step(self, batch: List[dataloader.MultimodalSeqsBatch]) -> None:
+    def _train_step(self, batch: dataloader.MultimodalSeqsBatch) -> None:
         """Run one train step"""
         self.model.train()
         self.optimizer.zero_grad()
-        with torch.autocast(device_type=self.params.device.type, dtype=self.params.float_dtype):
-            tokens, units = self.model(batch)
-        
+        tokens, units = self.model(batch)
         loss = self.calc_loss(batch, tokens, units)
-        if loss.isnan().any().item():
-            logger.error(batch.speech_to_text)
-            raise RuntimeError("Train loss is NaN! Something is wrong in the model!")
-        
         self.grad_scaler.scale(loss).backward()
         self.grad_scaler.step(self.optimizer)
         self.grad_scaler.update()
         self.lr_scheduler.step()
-        
         assert batch.speech_to_text.src_tokens is not None
         self.train_loss_hist.update(1, loss.item())
         self._train_step_log()
-        self.update_idx += 1
 
     def _save_model(self) -> None:
         logger.info("Saving model")
         if dist_utils.is_main_process():
-            torch.save({
-                "model_name": self.params.model_name,
-                "model": {
-                    key.replace("module.model.model.", ""): value
-                    for key, value in self.model.state_dict().items()
-                }
-            }, self.params.save_model_path)
+            state_dict = {
+                key.replace("module.model.", ""): value
+                for key, value in self.model.state_dict().items()
+            }
+            torch.save(state_dict, self.params.save_model_path)
         if dist_utils.is_dist_initialized():
             dist.barrier()
 
     def run(self) -> None:
-        logger.info("Start Finetuning")
+        logger.info("Start finetuning")
         self._reset_stats()
-        self._eval_model(n_batches=100)
-        
-        train_dataloader = self.train_data_loader.get_dataloader()
-        
+        self._eval_model()
+        batch_itr = self.train_data_loader.get_dataloader()
         while self.epoch_idx < self.params.max_epochs and self.patience_left:
-            for train_batch in tqdm(train_dataloader, desc="Training Steps"):
-                # Run batch through train step
-                self._train_step(train_batch)
-                
-                # Perform eval if its time to eval
-                if not self.update_idx or self.update_idx % self.params.eval_steps != 0:
-                    continue
-                
-                # Clear GPU memory for eval
-                torch.cuda.empty_cache()
-                self._eval_model(n_batches=100)
-                    
-                # Save the current model if its the best we've ever had
-                if self.is_best_state:
-                    self._save_model()
-                elif not self.patience_left:
-                    no_improve_steps = self.params.eval_steps * self.params.patience
-                    logger.info(
-                        "Early termination, as eval loss did not improve "
-                        f"over last {no_improve_steps} updates"
-                    )
-                    break
-                
+            for train_batch in batch_itr:
+                self._train_step(batch=train_batch)
+                if self.update_idx and self.update_idx % self.params.eval_steps == 0:
+                    self._eval_model()
+                    if self.is_best_state:
+                        self._save_model()
+                    elif not self.patience_left:
+                        no_improve_steps = self.params.eval_steps * self.params.patience
+                        logger.info(
+                            "Early termination, as eval loss did not improve "
+                            f"over last {no_improve_steps} updates"
+                        )
+                        break
+                self.update_idx += 1
             self.epoch_idx += 1

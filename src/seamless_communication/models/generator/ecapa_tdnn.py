@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
-from fairseq2.nn.padding import PaddingMask, to_padding_mask
+from fairseq2.nn import BatchLayout
 from torch import Tensor
 from torch.nn import Conv1d, LayerNorm, Module, ModuleList, ReLU, Sigmoid, Tanh, init
 
@@ -111,7 +111,7 @@ class ECAPA_TDNN(Module):
     def forward(
         self,
         x: Tensor,
-        padding_mask: Optional[PaddingMask] = None,
+        seqs_layout: Optional[BatchLayout] = None,
     ) -> Tensor:
         """Returns the embedding vector.
 
@@ -125,7 +125,7 @@ class ECAPA_TDNN(Module):
 
         xl = []
         for layer in self.blocks:
-            x = layer(x, padding_mask=padding_mask)
+            x = layer(x, seqs_layout=seqs_layout)
             xl.append(x)
 
         # Multi-layer feature aggregation
@@ -133,7 +133,7 @@ class ECAPA_TDNN(Module):
         x = self.mfa(x)
 
         # Attentive Statistical Pooling
-        x = self.asp(x, padding_mask=padding_mask)
+        x = self.asp(x, seqs_layout=seqs_layout)
         x = self.asp_norm(x.transpose(1, 2)).transpose(1, 2)
 
         # Final linear transformation
@@ -188,7 +188,7 @@ class TDNNBlock(Module):
         self.activation = ReLU()
         self.norm = LayerNorm(out_channels, eps=1e-12)
 
-    def forward(self, x: Tensor, padding_mask: Optional[PaddingMask] = None) -> Tensor:
+    def forward(self, x: Tensor, seqs_layout: Optional[BatchLayout] = None) -> Tensor:
         """Processes the input tensor x and returns an output tensor."""
         x = self.activation(self.conv(x))
 
@@ -293,11 +293,11 @@ class SEBlock(Module):
         )
         self.sigmoid = Sigmoid()
 
-    def forward(self, x: Tensor, padding_mask: Optional[PaddingMask] = None) -> Tensor:
+    def forward(self, x: Tensor, seqs_layout: Optional[BatchLayout] = None) -> Tensor:
         """Processes the input tensor x and returns an output tensor."""
-        if padding_mask is not None:
-            mask = padding_mask.materialize().unsqueeze(1)
-            s = (x * mask).sum(dim=2, keepdim=True) / padding_mask.seq_lens[
+        if seqs_layout is not None:
+            mask = seqs_layout.materialize().unsqueeze(1)
+            s = (x * mask).sum(dim=2, keepdim=True) / seqs_layout.seq_lens[
                 :, None, None
             ]
         else:
@@ -338,7 +338,7 @@ class AttentiveStatisticsPooling(Module):
             in_channels=attention_channels, out_channels=channels, kernel_size=1
         )
 
-    def forward(self, x: Tensor, padding_mask: Optional[PaddingMask] = None) -> Tensor:
+    def forward(self, x: Tensor, seqs_layout: Optional[BatchLayout] = None) -> Tensor:
         """Calculates mean and std for a batch (input tensor).
 
         Arguments
@@ -356,11 +356,11 @@ class AttentiveStatisticsPooling(Module):
             return mean, std
 
         # Make binary mask of shape [N, 1, L]
-        # mask = to_padding_mask(lengths, max(lengths))
-        if padding_mask is not None:
-            mask = padding_mask.materialize()
+        # mask = to_seqs_layout(lengths, max(lengths))
+        if seqs_layout is not None:
+            mask = seqs_layout.materialize()
         else:
-            mask = to_padding_mask(torch.IntTensor([L]), L).repeat(x.shape[0], 1).to(x)
+            mask = to_seqs_layout(torch.IntTensor([L]), L).repeat(x.shape[0], 1).to(x)
         mask = mask.unsqueeze(1)
 
         # Expand the temporal context of the pooling layer by allowing the
@@ -460,7 +460,7 @@ class SERes2NetBlock(Module):
                 kernel_size=1,
             )
 
-    def forward(self, x: Tensor, padding_mask: Optional[PaddingMask] = None) -> Tensor:
+    def forward(self, x: Tensor, seqs_layout: Optional[BatchLayout] = None) -> Tensor:
         """Processes the input tensor x and returns an output tensor."""
         residual = x
         if self.shortcut:
@@ -469,6 +469,6 @@ class SERes2NetBlock(Module):
         x = self.tdnn1(x)
         x = self.res2net_block(x)
         x = self.tdnn2(x)
-        x = self.se_block(x, padding_mask=padding_mask)
+        x = self.se_block(x, seqs_layout=seqs_layout)
 
         return x + residual

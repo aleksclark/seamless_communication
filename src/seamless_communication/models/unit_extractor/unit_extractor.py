@@ -13,13 +13,13 @@ import torch.nn.functional as F
 from fairseq2.assets.card import AssetCard
 from fairseq2.data import Collater
 from fairseq2.data.audio import AudioDecoder
-from fairseq2.memory import MemoryBlock
-from fairseq2.models.sequence import SequenceBatch
-from fairseq2.models.wav2vec2 import Wav2Vec2Model, load_wav2vec2_model
-from fairseq2.nn.padding import get_seqs_and_padding_mask
-from fairseq2.typing import DataType, Device
+from fairseq2.data._memory import MemoryBlock
+from fairseq2.models.wav2vec2 import Wav2Vec2Model, get_wav2vec2_model_hub
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch import Tensor, nn
 
+from seamless_communication.compat import get_seqs_and_seqs_layout, SequenceBatch
 from seamless_communication.models.unit_extractor.kmeans import KmeansModel
 from seamless_communication.models.unit_extractor.wav2vec2_layer_output import (
     Wav2Vec2LayerOutputModel,
@@ -46,7 +46,7 @@ class UnitExtractor(nn.Module):
     ):
         super().__init__()
 
-        wav2vec2_model = load_wav2vec2_model(
+        wav2vec2_model = get_wav2vec2_model_hub().load_model(
             model_name_or_card, device=device, dtype=dtype
         )
         wav2vec2_model.eval()
@@ -89,10 +89,10 @@ class UnitExtractor(nn.Module):
                 "format": -1,
             }
         src = self.collate(decoded_audio)["waveform"]
-        seqs, padding_mask = get_seqs_and_padding_mask(src)
+        seqs, seqs_layout = get_seqs_and_seqs_layout(src)
         seqs = seqs.view(1, -1)
         seqs = F.layer_norm(seqs, seqs.shape)
-        batch = SequenceBatch(seqs=seqs, padding_mask=padding_mask)
+        batch = SequenceBatch(seqs=seqs, seqs_layout=seqs_layout)
         features = self.model(batch, out_layer_idx).squeeze(0)
         units = self.kmeans_model(features)
         return units  # type: ignore[no-any-return]

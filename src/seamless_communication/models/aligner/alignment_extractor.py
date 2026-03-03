@@ -11,8 +11,8 @@ import numpy
 import torch
 import torch.nn as nn
 import torchaudio
-from fairseq2.typing import DataType, Device
-from fairseq2.data.typing import StringLike
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch import Tensor
 
 from seamless_communication.models.aligner.loader import load_unity2_alignment_model
@@ -82,7 +82,7 @@ class AlignmentExtractor(nn.Module):
             audio = audio.mean(0)
         assert (
             audio.ndim == 1
-        ), f"After channel averaging audio shape expected to be [Time] i.e. mono audio"
+        ), "After channel averaging audio shape expected to be [Time] i.e. mono audio"
         audio = audio.to(self.device, self.dtype)
 
         return audio
@@ -91,7 +91,7 @@ class AlignmentExtractor(nn.Module):
         assert isinstance(
             self.unit_extractor, UnitExtractor
         ), "Unit extractor is required to get units from audio tensor"
-        units = self.unit_extractor.predict(audio, self.unit_extractor_output_layer - 1)
+        units = self.unit_extractor.predict(audio, self.unit_extractor_output_layer)
         return units
 
     @torch.inference_mode()
@@ -101,7 +101,7 @@ class AlignmentExtractor(nn.Module):
         text: str,
         plot: bool = False,
         add_trailing_silence: bool = False,
-    ) -> Tuple[Tensor, Tensor, List[StringLike]]:
+    ) -> Tuple[Tensor, Tensor, List[str]]:
         if isinstance(audio, Tensor) and not torch.is_floating_point(audio):
             # we got units as audio arg
             units = audio
@@ -137,11 +137,11 @@ class AlignmentExtractor(nn.Module):
 
         return alignment_durations, tokenized_text_ids, tokenized_text_tokens
 
-    def detokenize_text(self, tokenized_text_ids: Tensor) -> StringLike:
+    def detokenize_text(self, tokenized_text_ids: Tensor) -> str:
         return self.alignment_model.alignment_frontend.decode_text(tokenized_text_ids)
 
     def plot_alignment(
-        self, audio: Tensor, text_tokens: List[StringLike], durations: Tensor
+        self, audio: Tensor, text_tokens: List[str], durations: Tensor
     ) -> None:
         if not matplotlib_available:
             raise RuntimeError(

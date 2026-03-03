@@ -4,15 +4,17 @@
 # This source code is licensed under the license found in the
 # MIT_LICENSE file in the root directory of this source tree.
 
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, Final, List, Literal, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
+from torch.nn import Module as Model
 from fairseq2.nn.embedding import Embedding, StandardEmbedding
-from fairseq2.nn.padding import PaddingMask
+from fairseq2.nn import BatchLayout
 from fairseq2.nn.position_encoder import PositionEncoder
-from fairseq2.nn.projection import Projection
-from fairseq2.typing import DataType, Device
+from fairseq2.nn import Projection
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch.nn import (
     ELU,
     BatchNorm1d,
@@ -43,6 +45,9 @@ from .streamable import (
     StreamableLSTM,
     StreamableResnetBlock,
 )
+
+
+PRETSSEL_VOCODER_FAMILY: Final = "vocoder_pretssel"
 
 ELU_PARAMS: Dict[str, Any] = {"alpha": 1.0}
 
@@ -96,14 +101,14 @@ class PretsselEncoderFrontend(Module):
     def forward(
         self,
         seqs: torch.Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
         prosody_input_seqs: torch.Tensor,
-        prosody_padding_mask: Optional[PaddingMask],
+        prosody_seqs_layout: Optional[BatchLayout],
         tgt_lang: str,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         prosody_embs = self.prosody_encoder(
             prosody_input_seqs,
-            prosody_padding_mask,
+            prosody_seqs_layout,
         ).unsqueeze(1)
 
         if self.embed_lang is not None:
@@ -115,7 +120,7 @@ class PretsselEncoderFrontend(Module):
             prosody_embs = torch.cat([prosody_embs, lang_embeds], dim=-1)
 
         seqs = self.embed_tokens(seqs)
-        seqs += self.pos_emb_alpha * (self.embed_positions(seqs, padding_mask) - seqs)
+        seqs += self.pos_emb_alpha * (self.embed_positions(seqs, seqs_layout) - seqs)
         seqs = self.dropout(seqs)
 
         return seqs, prosody_embs
@@ -147,22 +152,22 @@ class PretsselDecoderFrontend(Module):
     def forward(
         self,
         seqs: torch.Tensor,
-        padding_mask: PaddingMask,
+        seqs_layout: BatchLayout,
         durations: Optional[torch.Tensor] = None,
         duration_factor: float = 1.0,
         min_duration: int = 0,
         film_cond_emb: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, PaddingMask]:
-        seqs, padding_mask, _ = self.variance_adaptor(
-            seqs, padding_mask, durations, duration_factor, min_duration, film_cond_emb
+    ) -> Tuple[torch.Tensor, BatchLayout]:
+        seqs, seqs_layout, _ = self.variance_adaptor(
+            seqs, seqs_layout, durations, duration_factor, min_duration, film_cond_emb
         )
 
-        seqs += self.pos_emb_alpha * (self.embed_positions(seqs, padding_mask) - seqs)
+        seqs += self.pos_emb_alpha * (self.embed_positions(seqs, seqs_layout) - seqs)
 
-        return seqs, padding_mask
+        return seqs, seqs_layout
 
 
-class PretsselVocoder(Module):
+class PretsselVocoder(Model):
     """The expressivity-preserving vocoder"""
 
     encoder_frontend: PretsselEncoderFrontend
@@ -212,7 +217,7 @@ class PretsselVocoder(Module):
         device: Optional[Device] = None,
         dtype: Optional[DataType] = None,
     ):
-        super().__init__()
+        super().__init__(PRETSSEL_VOCODER_FAMILY)
         self.encoder_frontend = encoder_frontend
         self.encoder = encoder
         self.decoder_frontend = decoder_frontend
@@ -478,8 +483,8 @@ class PretsselVocoder(Module):
         seqs: torch.Tensor,
         tgt_lang: str,
         prosody_input_seqs: torch.Tensor,
-        padding_mask: Optional[PaddingMask] = None,
-        prosody_padding_mask: Optional[PaddingMask] = None,
+        seqs_layout: Optional[BatchLayout] = None,
+        prosody_seqs_layout: Optional[BatchLayout] = None,
         durations: Optional[torch.Tensor] = None,
         duration_factor: float = 1.0,
         min_duration: int = 0,
@@ -492,16 +497,16 @@ class PretsselVocoder(Module):
             prosody_input_seqs = prosody_input_seqs.unsqueeze(0)
         seqs, cond_embs = self.encoder_frontend(
             seqs,
-            padding_mask,
+            seqs_layout,
             prosody_input_seqs,
-            prosody_padding_mask,
+            prosody_seqs_layout,
             tgt_lang,
         )
-        seqs, padding_mask = self.encoder(seqs, padding_mask, cond_embs)
-        seqs, padding_mask = self.decoder_frontend(
-            seqs, padding_mask, durations, duration_factor, min_duration, cond_embs
+        seqs, seqs_layout = self.encoder(seqs, seqs_layout, cond_embs)
+        seqs, seqs_layout = self.decoder_frontend(
+            seqs, seqs_layout, durations, duration_factor, min_duration, cond_embs
         )
-        seqs, padding_mask = self.decoder(seqs, padding_mask, cond_embs)
+        seqs, seqs_layout = self.decoder(seqs, seqs_layout, cond_embs)
         seqs = self.final_proj(seqs)
 
         pn = seqs.transpose(1, 2)  # B x T x C -> B x C x T

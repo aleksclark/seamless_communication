@@ -11,9 +11,10 @@ from typing import Any, Dict
 import torch
 from fairseq2.data import SequenceData
 from fairseq2.data.data_pipeline import Collater
-from fairseq2.data.text import TextTokenizer
+from fairseq2.data.tokenizers import Tokenizer as TextTokenizer
 from fairseq2.models.wav2vec2 import Wav2Vec2EncoderConfig
-from fairseq2.nn.padding import get_seqs_and_padding_mask
+from fairseq2.nn import BatchLayout
+from seamless_communication.compat import get_seqs_and_seqs_layout
 from seamless_communication.models.unity.model import UnitYModel
 from simuleval.agents import SpeechToSpeechAgent
 from simuleval.agents.actions import Action, ReadAction, WriteAction
@@ -82,10 +83,10 @@ class OfflineWav2VecBertEncoderAgent(NoUpdateTargetMixin, SpeechToSpeechAgent): 
         inputs = torch.stack(states.source).to(device=self.device, dtype=self.dtype)
         src: SequenceData = self.collate(inputs)
 
-        seqs, padding_mask = get_seqs_and_padding_mask(src)
+        seqs, seqs_layout = get_seqs_and_seqs_layout(src)
         encoder_output, _ = self.model.encode_speech(
             seqs,
-            padding_mask,
+            seqs_layout,
         )
 
         return WriteAction(

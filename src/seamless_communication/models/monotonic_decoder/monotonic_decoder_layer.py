@@ -8,14 +8,15 @@ from typing import Optional, Tuple, final
 
 from fairseq2.nn.incremental_state import IncrementalStateBag
 from fairseq2.nn.normalization import LayerNorm
-from fairseq2.nn.padding import PaddingMask
-from fairseq2.nn.transformer import (
-    AttentionMask,
+from fairseq2.nn import BatchLayout
+from fairseq2.models.transformer import (
+    AttentionBias,
     FeedForwardNetwork,
     MultiheadAttention,
-    create_standard_layer_norm,
 )
-from fairseq2.typing import DataType, Device, finaloverride
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
+from typing_extensions import override
 from torch import Tensor
 from torch.nn import Dropout, Module
 
@@ -104,32 +105,32 @@ class MonotonicTransformerDecoderLayer(Module):
         else:
             self.register_module("ffn_dropout", None)
 
-    @finaloverride
+    @override
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
-        self_attn_mask: Optional[AttentionMask] = None,
+        seqs_layout: Optional[BatchLayout],
+        self_attn_mask: Optional[AttentionBias] = None,
         encoder_output: Optional[Tensor] = None,
-        encoder_padding_mask: Optional[PaddingMask] = None,
+        encoder_seqs_layout: Optional[BatchLayout] = None,
         *,
         state_bag: Optional[IncrementalStateBag] = None,
-    ) -> Tuple[Tensor, Optional[PaddingMask], Tensor]:
-        seqs = self._forward_self_attn(seqs, padding_mask, self_attn_mask, state_bag)
+    ) -> Tuple[Tensor, Optional[BatchLayout], Tensor]:
+        seqs = self._forward_self_attn(seqs, seqs_layout, self_attn_mask, state_bag)
 
         seqs, p_choose = self._forward_encoder_decoder_attn(
-            seqs, padding_mask, encoder_output, encoder_padding_mask
+            seqs, seqs_layout, encoder_output, encoder_seqs_layout
         )
 
         seqs = self._forward_ffn(seqs)
 
-        return seqs, padding_mask, p_choose
+        return seqs, seqs_layout, p_choose
 
     def _forward_self_attn(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
-        self_attn_mask: Optional[AttentionMask],
+        seqs_layout: Optional[BatchLayout],
+        self_attn_mask: Optional[AttentionBias],
         state_bag: Optional[IncrementalStateBag],
     ) -> Tensor:
         residual = seqs
@@ -138,9 +139,9 @@ class MonotonicTransformerDecoderLayer(Module):
 
         seqs = self.self_attn(
             seqs,
-            padding_mask,
+            seqs_layout,
             keys=seqs,
-            key_padding_mask=padding_mask,
+            key_seqs_layout=seqs_layout,
             values=seqs,
             attn_mask=self_attn_mask,
             state_bag=state_bag,
@@ -156,9 +157,9 @@ class MonotonicTransformerDecoderLayer(Module):
     def _forward_encoder_decoder_attn(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
         encoder_output: Optional[Tensor],
-        encoder_padding_mask: Optional[PaddingMask],
+        encoder_seqs_layout: Optional[BatchLayout],
     ) -> Tuple[Tensor, Tensor]:
         if encoder_output is None:
             raise ValueError(
@@ -173,9 +174,9 @@ class MonotonicTransformerDecoderLayer(Module):
 
         seqs = self.encoder_decoder_attn(
             seqs,
-            padding_mask,
+            seqs_layout,
             encoder_output,
-            encoder_padding_mask,
+            encoder_seqs_layout,
             encoder_output,
         )
 

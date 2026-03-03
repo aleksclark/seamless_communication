@@ -7,12 +7,16 @@
 from typing import Optional, Tuple, final
 
 from fairseq2.nn.normalization import LayerNorm
-from fairseq2.nn.padding import PaddingMask, apply_padding_mask
-from fairseq2.nn.transformer import MultiheadAttention, create_standard_layer_norm
-from fairseq2.typing import DataType, Device, finaloverride
+from fairseq2.nn import BatchLayout
+from fairseq2.models.transformer import MultiheadAttention
+from seamless_communication.compat import create_standard_layer_norm
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
+from typing_extensions import override
 from torch import Tensor
 from torch.nn import Conv1d, Dropout, Module, ReLU
 
+from seamless_communication.compat import apply_seqs_layout
 from seamless_communication.models.unity.film import FiLM
 
 
@@ -71,10 +75,10 @@ class Conv1dBlock(Module):
             dtype=dtype,
         )
 
-    @finaloverride
-    def forward(self, seqs: Tensor, padding_mask: Optional[PaddingMask]) -> Tensor:
+    @override
+    def forward(self, seqs: Tensor, seqs_layout: Optional[BatchLayout]) -> Tensor:
         # Ensure that we do not leak padded positions in the convolution layer.
-        seqs = apply_padding_mask(seqs, padding_mask)
+        seqs = apply_seqs_layout(seqs, seqs_layout)
 
         # (N, S, M) -> (N, M, S)
         seqs = seqs.transpose(1, 2)
@@ -85,7 +89,7 @@ class Conv1dBlock(Module):
         # (N, inner_dim, S) -> (N, S, inner_dim)
         seqs = seqs.transpose(1, 2)
 
-        seqs = apply_padding_mask(seqs, padding_mask)
+        seqs = apply_seqs_layout(seqs, seqs_layout)
 
         seqs = self.activation(seqs)
 
@@ -173,35 +177,35 @@ class FeedForwardTransformerLayer(Module):
         else:
             self.register_module("film", None)
 
-    @finaloverride
+    @override
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
         film_cond_emb: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Optional[PaddingMask]]:
-        seqs = self._forward_self_attn(seqs, padding_mask)
+    ) -> Tuple[Tensor, Optional[BatchLayout]]:
+        seqs = self._forward_self_attn(seqs, seqs_layout)
 
-        seqs = self._forward_conv1d(seqs, padding_mask)
+        seqs = self._forward_conv1d(seqs, seqs_layout)
 
         if self.film is not None and film_cond_emb is not None:
             seqs = self.film(seqs, film_cond_emb)
-            seqs = apply_padding_mask(seqs, padding_mask)
+            seqs = apply_seqs_layout(seqs, seqs_layout)
 
-        return seqs, padding_mask
+        return seqs, seqs_layout
 
     def _forward_self_attn(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
     ) -> Tensor:
         residual = seqs
 
         seqs = self.self_attn(
             seqs,
-            padding_mask,
+            seqs_layout,
             keys=seqs,
-            key_padding_mask=padding_mask,
+            key_seqs_layout=seqs_layout,
             values=seqs,
         )
 
@@ -215,11 +219,11 @@ class FeedForwardTransformerLayer(Module):
         return seqs
 
     def _forward_conv1d(
-        self, seqs: Tensor, padding_mask: Optional[PaddingMask]
+        self, seqs: Tensor, seqs_layout: Optional[BatchLayout]
     ) -> Tensor:
         residual = seqs
 
-        seqs = self.conv1d(seqs, padding_mask)
+        seqs = self.conv1d(seqs, seqs_layout)
 
         if self.conv1d_dropout is not None:
             seqs = self.conv1d_dropout(seqs)

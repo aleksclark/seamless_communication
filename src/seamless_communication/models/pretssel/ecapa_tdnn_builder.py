@@ -7,8 +7,9 @@
 from dataclasses import dataclass
 from typing import List, Optional
 
-from fairseq2.models.utils.arch_registry import ArchitectureRegistry
-from fairseq2.typing import DataType, Device
+
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 
 from seamless_communication.models.pretssel.ecapa_tdnn import ECAPA_TDNN
 
@@ -27,9 +28,13 @@ class EcapaTDNNConfig:
     input_dim: int
 
 
-ecapa_tdnn_archs = ArchitectureRegistry[EcapaTDNNConfig]("ecapa_tdnn")
+ecapa_tdnn_archs: dict = {}
 
-ecapa_tdnn_arch = ecapa_tdnn_archs.decorator
+def ecapa_tdnn_arch(name):
+    def decorator(fn):
+        ecapa_tdnn_archs[name] = fn
+        return fn
+    return decorator
 
 
 @ecapa_tdnn_arch("base")

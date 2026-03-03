@@ -8,14 +8,16 @@ import math
 from typing import List, Optional, Tuple, final
 
 import torch
-from fairseq2.data import VocabularyInfo
+from fairseq2.data.tokenizers import VocabularyInfo
 from fairseq2.models.nllb.tokenizer import NllbTokenizer
 from fairseq2.nn.embedding import Embedding
 from fairseq2.nn.normalization import LayerNorm
-from fairseq2.nn.padding import PaddingMask
+from fairseq2.nn import BatchLayout
 from fairseq2.nn.position_encoder import PositionEncoder
-from fairseq2.nn.transformer import create_standard_layer_norm
-from fairseq2.typing import DataType, Device, finaloverride
+from seamless_communication.compat import create_standard_layer_norm
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
+from typing_extensions import override
 from torch import Tensor
 from torch.nn import Dropout, Module, Parameter
 
@@ -261,14 +263,14 @@ class NARDecoderFrontend(Module):
     def character_level_upsampling(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
+        seqs_layout: Optional[BatchLayout],
         char_seqs: Tensor,
         char_lens: Tensor,
     ) -> Tensor:
         seqs, _ = self.char_length_regulator(seqs, char_lens)
 
         pos_embeds = self.pos_emb_alpha_char * (
-            self.char_pos_encoder(seqs, padding_mask) - seqs
+            self.char_pos_encoder(seqs, seqs_layout) - seqs
         )
 
         char_embeds = self.embed_char(char_seqs)
@@ -283,10 +285,10 @@ class NARDecoderFrontend(Module):
         return seqs
 
     def forward_unit_pos_embedding(
-        self, seqs: Tensor, padding_mask: Optional[PaddingMask]
+        self, seqs: Tensor, seqs_layout: Optional[BatchLayout]
     ) -> Tensor:
         pos_embeds = self.pos_emb_alpha * (
-            self.unit_pos_encoder(seqs, padding_mask) - seqs
+            self.unit_pos_encoder(seqs, seqs_layout) - seqs
         )
 
         seqs += pos_embeds
@@ -296,39 +298,39 @@ class NARDecoderFrontend(Module):
 
         return seqs
 
-    @finaloverride
+    @override
     def forward(
         self,
         encoder_output: Tensor,
-        encoder_padding_mask: Optional[PaddingMask],
+        encoder_seqs_layout: Optional[BatchLayout],
         text_seqs: Optional[Tensor],
         duration_factor: float = 1.0,
         film_cond_emb: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Optional[PaddingMask], Tensor]:
+    ) -> Tuple[Tensor, Optional[BatchLayout], Tensor]:
         assert text_seqs is not None
 
         # text_seqs: (N, S_text)
         char_seqs, char_seq_lens, char_lens = self.text_to_char_seqs(text_seqs)
 
         # char_seqs: (N, S_char)
-        encoder_padding_mask = PaddingMask(
+        encoder_seqs_layout = BatchLayout(
             char_seq_lens, batch_seq_len=char_seqs.size(1)
         )
 
         # (N, S_text, M) -> (N, S_char, M)
         seqs = self.character_level_upsampling(
-            encoder_output, encoder_padding_mask, char_seqs, char_lens
+            encoder_output, encoder_seqs_layout, char_seqs, char_lens
         )
 
         # (N, S_char, M) -> (N, S_unit, M)
-        seqs, padding_mask, durations = self.variance_adaptor(
+        seqs, seqs_layout, durations = self.variance_adaptor(
             seqs,
-            encoder_padding_mask,
+            encoder_seqs_layout,
             duration_factor=duration_factor,
             min_duration=1,
             film_cond_emb=film_cond_emb,
         )
 
-        seqs = self.forward_unit_pos_embedding(seqs, padding_mask)
+        seqs = self.forward_unit_pos_embedding(seqs, seqs_layout)
 
-        return seqs, padding_mask, durations
+        return seqs, seqs_layout, durations

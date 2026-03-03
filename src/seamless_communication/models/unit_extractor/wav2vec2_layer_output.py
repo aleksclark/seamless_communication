@@ -7,17 +7,17 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from fairseq2.models.sequence import SequenceBatch
+from fairseq2.nn import BatchLayout
 from fairseq2.models.wav2vec2 import (
     Wav2Vec2Config,
     Wav2Vec2EncoderConfig,
     Wav2Vec2Frontend,
     Wav2Vec2Model,
-    wav2vec2_arch,
 )
-from fairseq2.nn.padding import PaddingMask
-from fairseq2.nn.transformer import TransformerEncoder, TransformerNormOrder
+from fairseq2.models.transformer import TransformerEncoder, TransformerNormOrder
 from torch import Tensor
+
+from seamless_communication.compat import SequenceBatch
 
 
 def _encoder_xlsr2_1b_v2() -> Wav2Vec2EncoderConfig:
@@ -53,7 +53,9 @@ def _encoder_xlsr2_1b_v2() -> Wav2Vec2EncoderConfig:
     )
 
 
-@wav2vec2_arch("xlsr2_1b_v2")
+xlsr2_1b_v2_wav2vec2_archs = {}
+
+
 def _xlsr2_1b_v2() -> Wav2Vec2Config:
     encoder_config = _encoder_xlsr2_1b_v2()
 
@@ -63,8 +65,10 @@ def _xlsr2_1b_v2() -> Wav2Vec2Config:
         final_proj_bias=True,
         temporal_mask_span_len=10,
         max_temporal_mask_prob=0.65,
+        min_num_temporal_mask_spans=2,
         spatial_mask_span_len=10,
         max_spatial_mask_prob=0.0,
+        min_num_spatial_mask_spans=2,
         quantized_dim=1024,
         num_codebooks=2,
         num_codebook_entries=320,
@@ -91,14 +95,14 @@ class Wav2Vec2LayerOutputModel(nn.Module):
         :param batch:
             The batch of sequences to process.
         """
-        seqs, padding_mask = self.encoder_frontend(batch.seqs, batch.padding_mask)
+        seqs, seqs_layout = self.encoder_frontend(batch.seqs, batch.seqs_layout)
 
         w2v2_layer_output = None
 
         def hook(
             layer_idx: int,
             layer_output: Tensor,
-            layer_padding_mask: Optional[PaddingMask],
+            layer_seqs_layout: Optional[BatchLayout],
             num_layers: int,
         ) -> bool:
             nonlocal w2v2_layer_output
@@ -112,7 +116,7 @@ class Wav2Vec2LayerOutputModel(nn.Module):
             return True
 
         with self.encoder.register_layer_output_hook(hook):
-            _, _ = self.encoder(seqs, padding_mask)
+            _, _ = self.encoder(seqs, seqs_layout)
 
         assert w2v2_layer_output is not None
 

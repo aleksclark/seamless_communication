@@ -4,25 +4,28 @@
 # This source code is licensed under the license found in the
 # MIT_LICENSE file in the root directory of this source tree.
 
-from typing import Any, Mapping
+from typing import Any, Dict, Optional, Union
 
 import torch
 
-from fairseq2.assets import asset_store, download_manager
-from fairseq2.models.utils import ModelLoader
-from fairseq2.models.utils.checkpoint import convert_fairseq_checkpoint
-from fairseq2.models.wav2vec2.builder import Wav2Vec2Config
-from fairseq2.models.wav2vec2.loader import load_wav2vec2_config
-from fairseq2.models.wav2vec2.model import Wav2Vec2Model
+
+from fairseq2.assets import AssetCard, get_asset_store, get_asset_download_manager
+from fairseq2.models.utils.checkpoint import convert_fairseq_state_dict
+from fairseq2.models.wav2vec2 import Wav2Vec2Model
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 
 from seamless_communication.models.conformer_shaw.builder import (
+    CONFORMER_SHAW_FAMILY,
+    ConformerShawConfig,
+    conformer_shaw_archs,
     create_conformer_shaw_model,
 )
 
 
 def convert_conformer_shaw_checkpoint(
-    checkpoint: Mapping[str, Any], config: Wav2Vec2Config
-) -> Mapping[str, Any]:
+    checkpoint: Dict[str, Any], config: ConformerShawConfig
+) -> Dict[str, Any]:
     """Convert a fairseq conformer shaw checkpoint to fairseq2."""
     state_dict = checkpoint["model"]
 
@@ -70,13 +73,45 @@ def convert_conformer_shaw_checkpoint(
         # fmt: on
     }
 
-    return convert_fairseq_checkpoint(checkpoint, key_map)
+    return convert_fairseq_state_dict(state_dict, key_map)
+    checkpoint["model"] = state_dict
+    return checkpoint
 
 
-load_conformer_shaw_model = ModelLoader[Wav2Vec2Model, Wav2Vec2Config](
-    asset_store,
-    download_manager,
-    load_wav2vec2_config,
-    create_conformer_shaw_model,
-    convert_conformer_shaw_checkpoint,
-)
+def load_conformer_shaw_config(arch: str) -> ConformerShawConfig:
+    """Load config for the given architecture."""
+    return conformer_shaw_archs[arch]()
+
+
+def load_conformer_shaw_model(
+    model_name_or_card: Union[str, AssetCard],
+    *,
+    device: Optional[Device] = None,
+    dtype: Optional[DataType] = None,
+) -> Wav2Vec2Model:
+    if isinstance(model_name_or_card, str):
+        card = get_asset_store().retrieve_card(model_name_or_card)
+    else:
+        card = model_name_or_card
+
+    arch = card.metadata.get("model_arch", "conformer_shaw_600m")
+    config = load_conformer_shaw_config(arch)
+
+    model = create_conformer_shaw_model(config, device=device, dtype=dtype)
+
+    checkpoint_uri = card.metadata.get("checkpoint")
+    if checkpoint_uri:
+        dm = get_asset_download_manager()
+        checkpoint_path = dm.download_model(checkpoint_uri, card.name)
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = convert_conformer_shaw_checkpoint(checkpoint, config)
+        model.load_state_dict(checkpoint["model"])
+
+    if device is not None:
+        model = model.to(device)
+    if dtype is not None:
+        model = model.to(dtype)
+
+    model.eval()
+    return model
+

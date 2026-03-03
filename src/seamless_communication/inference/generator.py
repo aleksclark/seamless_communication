@@ -8,21 +8,21 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import torch
-from fairseq2.data import SequenceData, StringLike
-from fairseq2.data.text import TextTokenizer
-from fairseq2.generation import (
-    BeamSearchSeq2SeqGenerator,
-    Seq2SeqGenerator,
-    SequenceToTextConverter,
-    StepProcessor,
+from fairseq2.data import SequenceData
+from fairseq2.data.tokenizers import Tokenizer as TextTokenizer
+from fairseq2.generation import Seq2SeqGenerator
+from fairseq2.generation.beam_search import BeamSearchSeq2SeqGenerator
+from fairseq2.generation.step_processor import StepProcessor
+from fairseq2.generation.text import SequenceToTextConverter
+from fairseq2.nn import BatchLayout
+from fairseq2.nn.utils.module import maybe_infer_device as infer_device
+from fairseq2.nn.utils.padding import pad_seqs
+
+from seamless_communication.compat import (
+    apply_seqs_layout,
+    get_seqs_and_seqs_layout,
+    trim_seqs_layout,
 )
-from fairseq2.nn.padding import (
-    PaddingMask,
-    apply_padding_mask,
-    get_seqs_and_padding_mask,
-    pad_seqs,
-)
-from fairseq2.nn.utils.module import infer_device
 from torch import Tensor
 
 from seamless_communication.models.unity.model import (
@@ -137,6 +137,7 @@ class UnitYGenerator:
             decoder_frontend=model.text_decoder_frontend,
             decoder=model.text_decoder,
             final_proj=model.final_proj,
+            max_target_seq_len=model.max_target_seq_len,
             target_vocab_info=model.target_vocab_info,
         )
 
@@ -169,6 +170,7 @@ class UnitYGenerator:
                 decoder_frontend=model.text_decoder_frontend,
                 decoder=model.text_decoder,
                 final_proj=model.final_proj,
+                max_target_seq_len=model.max_target_seq_len,
                 target_vocab_info=model.target_vocab_info,
             )
             generator = BeamSearchSeq2SeqGenerator(
@@ -228,20 +230,20 @@ class UnitYGenerator:
     def __call__(
         self,
         source_seqs: Tensor,
-        source_padding_mask: Optional[PaddingMask],
+        source_seqs_layout: Optional[BatchLayout],
         input_modality: str = "speech",
         output_modality: str = "speech",
         ngram_filtering: bool = False,
         duration_factor: float = 1.0,
         prosody_encoder_input: Optional[SequenceData] = None,
-    ) -> Tuple[List[StringLike], Optional[Tensor]]:
+    ) -> Tuple[List[str], Optional[Tensor]]:
         """
         :param source_seqs:
             The source sequences to use for generation. *Shape:* :math:`(N,S,*)`,
             where :math:`N` is the batch size, :math:`S` is the sequence length,
             and :math:`*` is any number of sequence-specific dimensions
             including none.
-        :param source_padding_mask:
+        :param source_seqs_layout:
             The padding mask of ``source_seqs``. *Shape:* :math:`(N,S)`, where
             :math:`N` is the batch size and :math:`S` is the sequence length.
         :param input_modality:
@@ -259,7 +261,7 @@ class UnitYGenerator:
 
         if input_modality == "speech":
             texts, text_gen_output = self.s2t_converter.batch_convert(
-                source_seqs, source_padding_mask
+                source_seqs, source_seqs_layout
             )
         elif input_modality == "text":
             if self.t2t_converter is None:
@@ -267,7 +269,7 @@ class UnitYGenerator:
                     "Please set `use_text_encoder` to `True` in your model config to encode text."
                 )
             texts, text_gen_output = self.t2t_converter.batch_convert(
-                source_seqs, source_padding_mask
+                source_seqs, source_seqs_layout
             )
         else:
             raise ValueError(f"Unsupported input_modality: {input_modality}")
@@ -280,22 +282,21 @@ class UnitYGenerator:
 
         text_seq_list = [h[0].seq for h in text_gen_output.hypotheses]
 
-        text_seqs, text_padding_mask = pad_seqs(
-            text_seq_list, self.model.target_vocab_info.pad_idx
+        text_seqs, text_seqs_layout = pad_seqs(
+            text_seq_list, pad_value=self.model.target_vocab_info.pad_idx
         )
 
         # Manually trim the final EOS token to be consistent with fairseq.
         text_seqs = text_seqs[:, :-1]
 
-        if text_padding_mask is not None:
-            text_padding_mask = text_padding_mask.trim(1)
+        text_seqs_layout = trim_seqs_layout(text_seqs_layout, 1)
 
         # Use the output of the text generator to compute the decoder output.
-        decoder_output, decoder_padding_mask = self.model.decode(
+        decoder_output, decoder_seqs_layout = self.model.decode(
             text_seqs,
-            text_padding_mask,
+            text_seqs_layout,
             text_gen_output.encoder_output,
-            text_gen_output.encoder_padding_mask,
+            text_gen_output.encoder_seqs_layout,
         )
 
         assert self.model.t2u_model is not None
@@ -305,12 +306,12 @@ class UnitYGenerator:
         prosody_encoder_out = None
         if self.model.prosody_encoder_model is not None:
             assert prosody_encoder_input is not None
-            prosody_input_seqs, prosody_padding_mask = get_seqs_and_padding_mask(
+            prosody_input_seqs, prosody_seqs_layout = get_seqs_and_seqs_layout(
                 prosody_encoder_input
             )
             prosody_encoder_out = self.model.prosody_encoder_model(
                 prosody_input_seqs,
-                prosody_padding_mask,
+                prosody_seqs_layout,
             ).unsqueeze(1)
 
         if isinstance(self.model.t2u_model, UnitYT2UModel):
@@ -322,9 +323,9 @@ class UnitYGenerator:
 
             unit_gen_output = self.unit_generator(
                 source_seqs=decoder_output,
-                source_padding_mask=decoder_padding_mask,
+                source_seqs_layout=decoder_seqs_layout,
                 prompt_seqs=prefix_seqs,
-                prompt_padding_mask=None,
+                prompt_seqs_layout=None,
             )
 
             assert self.model.t2u_model.target_vocab_info.pad_idx is not None
@@ -332,12 +333,12 @@ class UnitYGenerator:
             unit_seq_list = [h[0].seq for h in unit_gen_output.hypotheses]
 
             unit_seqs, _ = pad_seqs(
-                unit_seq_list, self.model.t2u_model.target_vocab_info.pad_idx
+                unit_seq_list, pad_value=self.model.t2u_model.target_vocab_info.pad_idx
             )
         else:
-            t2u_model_output, decoder_padding_mask, _ = self.model.t2u_model(
+            t2u_model_output, decoder_seqs_layout, _ = self.model.t2u_model(
                 text_decoder_output=decoder_output,
-                text_decoder_padding_mask=decoder_padding_mask,
+                text_decoder_seqs_layout=decoder_seqs_layout,
                 text_seqs=text_seqs,
                 duration_factor=duration_factor,
                 film_cond_emb=prosody_encoder_out,
@@ -345,8 +346,8 @@ class UnitYGenerator:
             # (B, S_unit, V_unit)
             unit_seqs = t2u_model_output.logits.argmax(dim=2)
             # Apply the padding mask to the generated units.
-            unit_seqs = apply_padding_mask(
-                unit_seqs, decoder_padding_mask, t2u_model_output.vocab_info.pad_idx
+            unit_seqs = apply_seqs_layout(
+                unit_seqs, decoder_seqs_layout, t2u_model_output.pad_idx
             )
 
         # Convert to speech units.

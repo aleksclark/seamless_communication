@@ -6,15 +6,16 @@
 
 import numpy as np
 import torch
-from fairseq2.assets import download_manager
-from fairseq2.typing import DataType, Device
+from fairseq2.assets import get_asset_download_manager
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch import Tensor, nn
 
 
 class KmeansModel(nn.Module):
     def __init__(self, kmeans_uri: str, device: Device, dtype: DataType):
         super().__init__()
-        km_path = download_manager.download_checkpoint(kmeans_uri, kmeans_uri)
+        km_path = get_asset_download_manager().download_model(kmeans_uri, kmeans_uri)
         km_model = np.load(km_path)
         centroids_numpy = km_model.transpose()
         centroids = torch.from_numpy(centroids_numpy)

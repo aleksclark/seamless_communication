@@ -8,20 +8,20 @@ from typing import Iterable, Optional, Tuple, final
 
 import torch
 from fairseq2.models.conformer import ConformerBlock
-from fairseq2.nn.module_list import ModuleList
+from torch.nn import ModuleList
 from fairseq2.nn.normalization import LayerNorm
-from fairseq2.nn.padding import PaddingMask
-from fairseq2.nn.projection import Linear
-from fairseq2.nn.transformer import (
-    AttentionMask,
+from fairseq2.nn import BatchLayout
+from fairseq2.nn import Linear
+from fairseq2.models.transformer import (
+    AttentionBias,
     FeedForwardNetwork,
-    LayerNormFactory,
     MultiheadAttention,
     TransformerEncoder,
     TransformerEncoderLayer,
-    create_standard_layer_norm,
 )
-from fairseq2.typing import DataType, Device
+from seamless_communication.compat import LayerNormFactory, create_standard_layer_norm
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from overrides import final as finaloverride
 from torch import Tensor
 from torch.nn import GLU, Conv1d, Dropout, ReLU
@@ -98,9 +98,9 @@ class UnitYEncoderAdaptor(TransformerEncoder):
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
-    ) -> Tuple[Tensor, Optional[PaddingMask]]:
-        seqs, padding_mask = self.inner(seqs, padding_mask)
+        seqs_layout: Optional[BatchLayout],
+    ) -> Tuple[Tensor, Optional[BatchLayout]]:
+        seqs, seqs_layout = self.inner(seqs, seqs_layout)
 
         if self.inner_layer_norm is not None:
             seqs = self.inner_layer_norm(seqs)
@@ -109,11 +109,11 @@ class UnitYEncoderAdaptor(TransformerEncoder):
         seqs = seqs + 0.5 * self._expand_contract(seqs)
 
         for layer in self.adaptor_layers:
-            seqs, padding_mask = layer(seqs, padding_mask)
+            seqs, seqs_layout = layer(seqs, seqs_layout)
 
         seqs = self.layer_norm(seqs)
 
-        return seqs, padding_mask
+        return seqs, seqs_layout
 
     def _expand_contract(self, seqs: Tensor) -> Tensor:
         seqs = self.proj1(seqs)
@@ -237,21 +237,21 @@ class UnitYTransformerAdaptorLayer(TransformerEncoderLayer):
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
-        self_attn_mask: Optional[AttentionMask] = None,
-    ) -> Tuple[Tensor, Optional[PaddingMask]]:
-        seqs, padding_mask = self._forward_self_attn(seqs, padding_mask, self_attn_mask)
+        seqs_layout: Optional[BatchLayout],
+        self_attn_mask: Optional[AttentionBias] = None,
+    ) -> Tuple[Tensor, Optional[BatchLayout]]:
+        seqs, seqs_layout = self._forward_self_attn(seqs, seqs_layout, self_attn_mask)
 
         seqs = self._forward_ffn(seqs)
 
-        return seqs, padding_mask
+        return seqs, seqs_layout
 
     def _forward_self_attn(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
-        self_attn_mask: Optional[AttentionMask],
-    ) -> Tuple[Tensor, Optional[PaddingMask]]:
+        seqs_layout: Optional[BatchLayout],
+        self_attn_mask: Optional[AttentionBias],
+    ) -> Tuple[Tensor, Optional[BatchLayout]]:
         residual = self.residual_layer_norm(seqs)
 
         # Apply pooling to the residual to match the sequence length of the
@@ -279,17 +279,17 @@ class UnitYTransformerAdaptorLayer(TransformerEncoderLayer):
         # (N, M, S) -> (N, S, M)
         seqs = seqs.transpose(1, 2)
 
-        padding_mask = _compute_new_padding_mask(
-            seqs, padding_mask, self.kernel_size, self.stride
+        seqs_layout = _compute_new_seqs_layout(
+            seqs, seqs_layout, self.kernel_size, self.stride
         )
 
         # The rest of the computation is identical to a vanilla Transformer
         # encoder layer.
         seqs = self.self_attn(
             seqs,
-            padding_mask,
+            seqs_layout,
             keys=seqs,
-            key_padding_mask=padding_mask,
+            key_seqs_layout=seqs_layout,
             values=seqs,
             attn_mask=self_attn_mask,
         )
@@ -299,7 +299,7 @@ class UnitYTransformerAdaptorLayer(TransformerEncoderLayer):
 
         seqs = seqs + residual
 
-        return seqs, padding_mask
+        return seqs, seqs_layout
 
     def _forward_ffn(self, seqs: Tensor) -> Tensor:
         residual = seqs
@@ -393,9 +393,9 @@ class UnitYConformerAdaptorLayer(TransformerEncoderLayer):
     def forward(
         self,
         seqs: Tensor,
-        padding_mask: Optional[PaddingMask],
-        self_attn_mask: Optional[AttentionMask] = None,
-    ) -> Tuple[Tensor, Optional[PaddingMask]]:
+        seqs_layout: Optional[BatchLayout],
+        self_attn_mask: Optional[AttentionBias] = None,
+    ) -> Tuple[Tensor, Optional[BatchLayout]]:
         if self.layer_norm is not None:
             seqs = self.layer_norm(seqs)
 
@@ -410,11 +410,11 @@ class UnitYConformerAdaptorLayer(TransformerEncoderLayer):
         # (N, M, S) -> (N, S, M)
         seqs = seqs.transpose(1, 2)
 
-        padding_mask = _compute_new_padding_mask(
-            seqs, padding_mask, self.kernel_size, self.stride
+        seqs_layout = _compute_new_seqs_layout(
+            seqs, seqs_layout, self.kernel_size, self.stride
         )
 
-        return self.block(seqs, padding_mask, self_attn_mask)  # type: ignore[no-any-return]
+        return self.block(seqs, seqs_layout, self_attn_mask)  # type: ignore[no-any-return]
 
     def extra_repr(self) -> str:
         """:meta private:"""
@@ -423,16 +423,16 @@ class UnitYConformerAdaptorLayer(TransformerEncoderLayer):
         return s + f", kernel_size={self.kernel_size}, stride={self.stride}"
 
 
-def _compute_new_padding_mask(
-    seqs: Tensor, padding_mask: Optional[PaddingMask], kernel_size: int, stride: int
-) -> Optional[PaddingMask]:
-    if padding_mask is None:
-        return padding_mask
+def _compute_new_seqs_layout(
+    seqs: Tensor, seqs_layout: Optional[BatchLayout], kernel_size: int, stride: int
+) -> Optional[BatchLayout]:
+    if seqs_layout is None:
+        return seqs_layout
 
     pad = kernel_size // 2
 
-    seq_lens = ((padding_mask.seq_lens + 2 * pad - kernel_size) / stride) + 1
+    seq_lens = ((seqs_layout.seq_lens + 2 * pad - kernel_size) / stride) + 1
 
     seq_lens = seq_lens.floor().to(torch.int64)
 
-    return PaddingMask(seq_lens, batch_seq_len=seqs.size(1))
+    return BatchLayout(seq_lens, batch_seq_len=seqs.size(1))

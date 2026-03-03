@@ -7,7 +7,8 @@
 import argparse
 import logging
 
-from fairseq2.assets import asset_store, download_manager
+from fairseq2.assets import get_asset_store
+from fairseq2.assets import get_asset_download_manager
 
 from seamless_communication.cli.streaming.scorers.seamless_quality_scorer import (
     SeamlessQualityScorer as SeamlessQualityScorer,
@@ -83,7 +84,7 @@ def main() -> None:
             default="seamless_streaming_unity",
         )
         args, _ = parser.parse_known_args()
-        asset_card = asset_store.retrieve_card(name=args.unity_model_name)
+        asset_card = get_asset_store().retrieve_card(name=args.unity_model_name)
         tokenizer_uri = asset_card.field("tokenizer").as_uri()
         tokenizer_path = download_manager.download_tokenizer(
             tokenizer_uri, asset_card.name, force=False, progress=True

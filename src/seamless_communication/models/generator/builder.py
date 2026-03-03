@@ -7,18 +7,19 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from fairseq2.data import VocabularyInfo
-from fairseq2.models.utils.arch_registry import ArchitectureRegistry
+from fairseq2.data.tokenizers import VocabularyInfo
+
 from fairseq2.nn.embedding import StandardEmbedding, init_scaled_embedding
 from fairseq2.nn.position_encoder import SinusoidalPositionEncoder
-from fairseq2.nn.projection import Linear
-from fairseq2.nn.transformer import (
+from fairseq2.nn import Linear
+from fairseq2.models.transformer import (
     MultiheadAttention,
     StandardMultiheadAttention,
     TransformerNormOrder,
     create_default_sdpa,
 )
-from fairseq2.typing import DataType, Device
+from fairseq2.data_type import DataType
+from fairseq2.device import Device
 from torch.nn import Conv1d
 
 from seamless_communication.models.generator.ecapa_tdnn_builder import (
@@ -110,16 +111,19 @@ class VocoderConfig:
     gcmvn_stats: Dict[str, List]  # type: ignore[type-arg]
 
 
-vocoder_archs = ArchitectureRegistry[VocoderConfig]("vocoder_pretssel")
+vocoder_archs: dict = {}
 
-
-vocoder_arch = vocoder_archs.decorator
+def vocoder_arch(name):
+    def decorator(fn):
+        vocoder_archs[name] = fn
+        return fn
+    return decorator
 
 
 def pretssel_config() -> (
     Tuple[PretsselEncoderFrontendConfig, FFTLayerConfig, PretsselDecoderFrontendConfig]
 ):
-    prosody_encoder_config = ecapa_tdnn_archs.get_config("base")
+    prosody_encoder_config = ecapa_tdnn_archs["base"]()
 
     encoder_frontend_config = PretsselEncoderFrontendConfig(
         prosody_encoder_config=prosody_encoder_config,
