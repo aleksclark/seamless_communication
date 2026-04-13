@@ -26,6 +26,7 @@ setup(
         "fire",
         "librosa",
         "openai-whisper",
+        "overrides",
         "simuleval~=1.1.3",
         "soundfile",
         "scipy",

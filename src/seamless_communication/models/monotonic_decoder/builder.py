@@ -155,7 +155,7 @@ class MonotonicDecoderBuilder:
         """Build an embedding table."""
         return StandardEmbedding(
             num_embeddings=self.config.vocab_info.size,
-            embedding_dim=self.config.model_dim,
+            embed_dim=self.config.model_dim,
             pad_idx=self.config.vocab_info.pad_idx,
             init_fn=init_scaled_embedding,
             device=self.device,
@@ -172,6 +172,7 @@ class MonotonicDecoderBuilder:
         )
 
         return TransformerEmbeddingFrontend(
+            self.config.model_dim,
             embed,
             pos_encoder,
             dropout_p=self.config.dropout_p,
@@ -213,7 +214,9 @@ class MonotonicDecoderBuilder:
 
     def build_attention(self, num_heads: int) -> MultiheadAttention:
         """Build a Transformer multi-head attention layer."""
-        sdpa = create_default_sdpa(attn_dropout_p=self.config.dropout_p)
+        from fairseq2.models.transformer.attention_bias import IdentityBias
+
+        sdpa = create_default_sdpa(IdentityBias(), dropout_p=self.config.dropout_p)
 
         return StandardMultiheadAttention(
             self.config.model_dim,
@@ -242,7 +245,6 @@ class MonotonicDecoderBuilder:
             self.config.model_dim,
             self.config.ffn_inner_dim,
             bias=True,
-            norm_order=TransformerNormOrder.PRE,
             device=self.device,
             dtype=self.dtype,
         )

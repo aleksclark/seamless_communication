@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 import torch
 from fairseq2.assets import AssetCard, AssetStore, get_asset_store, get_asset_download_manager
 from fairseq2.assets.card import AssetCardError
-from fairseq2.models.nllb import NllbConfig, load_nllb_tokenizer
+from fairseq2.models.nllb import NllbConfig, NllbTokenizerConfig, load_nllb_tokenizer
 from fairseq2.models.utils.checkpoint import convert_fairseq_state_dict
 from fairseq2.data_type import DataType
 from fairseq2.device import Device
@@ -367,7 +367,27 @@ def _fairseq_key_map(config: UnitYConfig) -> Dict[str, str]:
     return key_map
 
 
-load_unity_text_tokenizer = load_nllb_tokenizer
+def load_unity_text_tokenizer(model_name_or_card: Union[str, AssetCard]) -> Any:
+    """Load an NLLB text tokenizer by model name, compatible with fairseq2 >= 0.7."""
+    asset_store = get_asset_store()
+    download_manager = get_asset_download_manager()
+
+    if isinstance(model_name_or_card, str):
+        card = asset_store.retrieve_card(model_name_or_card)
+    else:
+        card = model_name_or_card
+
+    tokenizer_uri_str = card.field("tokenizer").as_(str)
+    tokenizer_uri = Uri.parse(tokenizer_uri_str)
+    tokenizer_path = download_manager.download_tokenizer(
+        tokenizer_uri, card.name, force=False
+    )
+
+    langs = card.field("langs").as_(list)
+    default_lang = card.field("default_lang").as_(str)
+    config = NllbTokenizerConfig(langs=langs, default_lang=default_lang)
+
+    return load_nllb_tokenizer(tokenizer_path, config)
 
 
 class UnitYUnitTokenizerLoader:
@@ -451,6 +471,7 @@ def load_unity_model(
     *,
     device: Optional[Device] = None,
     dtype: Optional[DataType] = None,
+    config: Optional["UnitYConfig"] = None,
 ) -> "UnitYModel":
     """Load a UnitY model from an asset card."""
     from seamless_communication.models.unity.model import UnitYModel
@@ -461,7 +482,8 @@ def load_unity_model(
     else:
         card = store.retrieve_card(model_name_or_card)
 
-    config = load_unity_config(card)
+    if config is None:
+        config = load_unity_config(card)
     model = create_unity_model(config, device=device, dtype=dtype)
 
     download_manager = get_asset_download_manager()

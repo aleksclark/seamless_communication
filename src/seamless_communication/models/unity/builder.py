@@ -46,6 +46,9 @@ from seamless_communication.models.conformer_shaw import (
     ConformerShawEncoderBuilder,
     ConformerShawEncoderConfig,
 )
+from seamless_communication.models.conformer_shaw.builder import (
+    ShawRelativePositionSDPAConfig,
+)
 
 
 @dataclass
@@ -182,9 +185,43 @@ def _base_v2() -> UnitYConfig:
     nllb_config.vocab_size = 256102  # NLLB-100
     nllb_config.max_seq_len = 4096
 
+    w2v2_config = ConformerShawEncoderConfig(
+        model_dim=1024,
+        max_seq_len=4096,
+        feature_dim=160,
+        use_fbank=True,
+        first_pass_dropout_p=0.0,
+        layer_norm_features=False,
+        feature_extractor_layer_descs=[],
+        feature_extractor_bias=False,
+        feature_extractor_layer_norm_convs=False,
+        feature_grad_scale=0.0,
+        num_fbank_channels=80,
+        fbank_stride=2,
+        sample_fbank_every_k=1,
+        pos_encoder_type="shaw_relative",
+        pos_encoder_depth=0,
+        pos_conv_kernel_size=0,
+        num_pos_conv_groups=0,
+        use_conformer=True,
+        num_encoder_layers=24,
+        num_encoder_attn_heads=16,
+        ffn_inner_dim=4096,
+        dropout_p=0.0,
+        attn_dropout_p=0.0,
+        layer_drop_p=0.0,
+        norm_order=TransformerNormOrder.POST,
+        depthwise_conv_kernel_size=31,
+        shaw_rel_pos_sdpa_config=ShawRelativePositionSDPAConfig(
+            max_left_rel_pos=64,
+            max_right_rel_pos=8,
+            use_rel_pos_values=False,
+        ),
+    )
+
     return UnitYConfig(
         model_dim=1024,
-        w2v2_encoder_config=Wav2Vec2EncoderConfig(),
+        w2v2_encoder_config=w2v2_config,
         nllb_config=nllb_config,
         t2u_config=None,
         prosody_encoder_config=None,
@@ -206,9 +243,38 @@ def _expressivity_v2() -> UnitYConfig:
     nllb_config.vocab_size = 256102  # NLLB-100
     nllb_config.max_seq_len = 10000
 
+    w2v2_config = Wav2Vec2EncoderConfig(
+        model_dim=1024,
+        max_seq_len=4096,
+        feature_dim=160,
+        use_fbank=True,
+        first_pass_dropout_p=0.0,
+        layer_norm_features=False,
+        feature_extractor_layer_descs=[],
+        feature_extractor_bias=False,
+        feature_extractor_layer_norm_convs=False,
+        feature_grad_scale=0.0,
+        num_fbank_channels=80,
+        fbank_stride=2,
+        sample_fbank_every_k=1,
+        pos_encoder_type="relative",
+        pos_encoder_depth=0,
+        pos_conv_kernel_size=0,
+        num_pos_conv_groups=0,
+        use_conformer=True,
+        num_encoder_layers=24,
+        num_encoder_attn_heads=16,
+        ffn_inner_dim=4096,
+        dropout_p=0.0,
+        attn_dropout_p=0.0,
+        layer_drop_p=0.0,
+        norm_order=TransformerNormOrder.POST,
+        depthwise_conv_kernel_size=31,
+    )
+
     return UnitYConfig(
         model_dim=1024,
-        w2v2_encoder_config=Wav2Vec2EncoderConfig(),
+        w2v2_encoder_config=w2v2_config,
         nllb_config=nllb_config,
         t2u_config=None,
         prosody_encoder_config=EcapaTDNNConfig(),
@@ -250,11 +316,6 @@ class UnitYBuilder:
         device: Optional[Device] = None,
         dtype: Optional[DataType] = None,
     ) -> None:
-        if config.w2v2_encoder_config.model_dim != config.model_dim:
-            raise ValueError(
-                f"`config.model_dim` and `config.w2v2_encoder_config.model_dim` must be equal, but are {config.model_dim} and {config.w2v2_encoder_config.model_dim} instead."
-            )
-
         if config.nllb_config.model_dim != config.model_dim:
             raise ValueError(
                 f"`config.model_dim` and `config.nllb_config.model_dim` must be equal, but are {config.model_dim} and {config.nllb_config.model_dim} instead."
@@ -344,6 +405,7 @@ class UnitYBuilder:
         return UnitYEncoderAdaptor(
             w2v2_encoder,
             layers,
+            model_dim=self.config.model_dim,
             inner_layer_norm=self.config.adaptor_layer_norm,
             device=self.device,
             dtype=self.dtype,

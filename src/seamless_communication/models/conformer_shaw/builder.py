@@ -17,7 +17,15 @@ from fairseq2.models.wav2vec2 import (
     Wav2Vec2Factory,
 )
 from fairseq2.models.wav2vec2.model import Wav2Vec2Model
-from fairseq2.models.transformer import SDPA, ShawRelativePositionSDPA, create_default_sdpa
+from fairseq2.models.transformer import (
+    MultiheadAttention,
+    ShawRelativePositionSDPA,
+    StandardMultiheadAttention,
+    create_default_sdpa,
+)
+from fairseq2.models.transformer.attention_bias import IdentityBias
+from fairseq2.models.wav2vec2.factory import init_bert_projection
+from fairseq2.runtime.lazy import Lazy
 from fairseq2.data_type import DataType
 from fairseq2.device import Device
 
@@ -135,25 +143,36 @@ class ConformerShawEncoderBuilder(Wav2Vec2EncoderFactory):
 
         self._device, self._dtype = device, dtype
 
-    def create_rel_pos_encoding(self) -> ShawRelativePositionSDPA:
+    def create_self_attention(
+        self, lazy_rel_pos_encoding: Lazy,  # type: ignore[override]
+    ) -> MultiheadAttention:
         if self.config.shaw_rel_pos_sdpa_config is None:
             raise ValueError(
-                "`shaw_rel_pos_sdpa_config` must be specified when `pos_encoder_type` is 'shaw_relative'."
+                "`shaw_rel_pos_sdpa_config` must be specified when "
+                "`pos_encoder_type` is 'shaw_relative'."
             )
-
-        sdpa = create_default_sdpa(attn_dropout_p=self.config.attn_dropout_p)
 
         sdpa_config = self.config.shaw_rel_pos_sdpa_config
 
-        return ShawRelativePositionSDPA(
+        attn_bias = IdentityBias()
+
+        sdpa = ShawRelativePositionSDPA(
             self.config.model_dim,
             self.config.num_encoder_attn_heads,
+            attn_bias,
             sdpa_config.max_left_rel_pos,
-            max_right_rel_pos=sdpa_config.max_right_rel_pos,
+            max_rhs_rel_pos=sdpa_config.max_right_rel_pos,
             use_rel_pos_values=sdpa_config.use_rel_pos_values,
-            inner_sdpa=sdpa,
             device=self._device,
             dtype=self._dtype,
+        )
+
+        return StandardMultiheadAttention(
+            self.config.model_dim,
+            self.config.num_encoder_attn_heads,
+            sdpa,
+            qkv_proj_init_fn=init_bert_projection,
+            output_proj_init_fn=init_bert_projection,
         )
 
     def create_conformer_conv(self) -> ConformerConvolution:

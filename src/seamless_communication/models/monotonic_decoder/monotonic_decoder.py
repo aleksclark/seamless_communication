@@ -9,7 +9,7 @@ from typing import Iterable, List, Optional, Tuple, final
 import torch
 from fairseq2.nn.incremental_state import IncrementalStateBag
 from torch.nn import ModuleList
-from fairseq2.nn.normalization import LayerNorm
+from fairseq2.nn.normalization import LayerNorm, StandardLayerNorm
 from fairseq2.nn import BatchLayout
 from fairseq2.models.transformer import (
     AttentionBias,
@@ -59,8 +59,8 @@ class MonotonicTransformerDecoder(Module):
 
         self.layers = layer_list
 
-        self.layer_norm = create_standard_layer_norm(
-            self.model_dim, device=device, dtype=dtype
+        self.layer_norm = StandardLayerNorm(
+            self.model_dim, bias=True, device=device, dtype=dtype
         )
 
     @override

@@ -34,7 +34,7 @@ class MonotonicDecoderModel(Model):
         text_decoder: MonotonicTransformerDecoder,
         final_proj: Projection,
     ) -> None:
-        super().__init__(MONOTONIC_DECODER_FAMILY)
+        super().__init__()
 
         self.text_decoder_frontend = text_decoder_frontend
         self.text_decoder = text_decoder

@@ -45,6 +45,7 @@ class UnitYEncoderAdaptor(TransformerEncoder):
         inner: TransformerEncoder,
         adaptor_layers: Iterable[TransformerEncoderLayer],
         *,
+        model_dim: Optional[int] = None,
         inner_layer_norm: bool = False,
         layer_norm_factory: Optional[LayerNormFactory] = None,
         device: Optional[Device] = None,
@@ -55,14 +56,18 @@ class UnitYEncoderAdaptor(TransformerEncoder):
             The speech encoder to wrap.
         :param adaptor_layers:
             The adaptor layers to stack on top of ``inner``.
+        :param model_dim:
+            The model dimension. If ``None``, inferred from ``inner``.
         :param inner_layer_norm:
             If ``True``, applies Layer Normalization to outputs of ``inner``.
         :param layer_norm_factory:
             The factory to use to construct the Layer Normalization modules.
         """
-        model_dim = inner.model_dim
+        if model_dim is None:
+            model_dim = inner.model_dim  # type: ignore[attr-defined]
 
-        super().__init__(model_dim)
+        super().__init__()
+        self.model_dim = model_dim
 
         if layer_norm_factory is None:
             layer_norm_factory = create_standard_layer_norm
@@ -155,6 +160,7 @@ class UnitYTransformerAdaptorLayer(TransformerEncoderLayer):
         kernel_size: int,
         stride: int,
         *,
+        model_dim: Optional[int] = None,
         dropout_p: float = 0.1,
         layer_norm_factory: Optional[LayerNormFactory] = None,
         device: Optional[Device] = None,
@@ -169,15 +175,19 @@ class UnitYTransformerAdaptorLayer(TransformerEncoderLayer):
             The kernel size for 1D pooling convolutions.
         :param stride:
             The stride for 1D pooling convolutions.
+        :param model_dim:
+            The model dimension. If ``None``, inferred from ``self_attn``.
         :param dropout_p:
             The dropout probability on outputs of the self attention layer and
             the feed-forward network.
         :param layer_norm_factory:
             The factory to use to construct the Layer Normalization modules.
         """
-        model_dim = self_attn.model_dim
+        if model_dim is None:
+            model_dim = self_attn.output_proj.output_dim
 
-        super().__init__(model_dim)
+        super().__init__()
+        self.model_dim = model_dim
 
         if layer_norm_factory is None:
             layer_norm_factory = create_standard_layer_norm
@@ -360,7 +370,8 @@ class UnitYConformerAdaptorLayer(TransformerEncoderLayer):
         :param layer_norm_factory:
             The factory to use to construct the Layer Normalization modules.
         """
-        super().__init__(block.model_dim)
+        super().__init__()
+        self._model_dim = block.model_dim  # type: ignore[attr-defined]
 
         if layer_norm_factory is None:
             layer_norm_factory = create_standard_layer_norm

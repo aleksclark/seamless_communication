@@ -122,17 +122,20 @@ class UnitYPipelineMixin:
         else:
             unit_tokenizer = load_unity_unit_tokenizer(args.unity_model_name)
 
-        asset_card = get_asset_store().retrieve_card(args.unity_model_name)
-        asset_card.field("model_config").set(unity_config)
-
         logger.info(
             f"Loading the UnitY model: {args.unity_model_name} on device={args.device}, dtype={args.dtype}"
         )
-        unity_model = load_unity_model(asset_card, device=args.device, dtype=args.dtype)
+        unity_model = load_unity_model(
+            args.unity_model_name, device=args.device, dtype=args.dtype, config=unity_config
+        )
         unity_model.eval()
 
-        monotonic_decoder_config = load_monotonic_decoder_config(
+        monotonic_decoder_card = get_asset_store().retrieve_card(
             args.monotonic_decoder_model_name
+        )
+        monotonic_decoder_arch = monotonic_decoder_card.field("model_arch").as_(str)
+        monotonic_decoder_config = load_monotonic_decoder_config(
+            monotonic_decoder_arch
         )
         logger.info(
             f"Loading the Monotonic Decoder model: {args.monotonic_decoder_model_name} on device={args.device}, dtype={args.dtype}"

@@ -7,7 +7,7 @@
 from typing import Optional, Tuple, final
 
 from fairseq2.nn.incremental_state import IncrementalStateBag
-from fairseq2.nn.normalization import LayerNorm
+from fairseq2.nn.normalization import LayerNorm, StandardLayerNorm
 from fairseq2.nn import BatchLayout
 from fairseq2.models.transformer import (
     AttentionBias,
@@ -62,10 +62,10 @@ class MonotonicTransformerDecoderLayer(Module):
         """
         super().__init__()
 
-        self.model_dim = self_attn.model_dim
+        self.model_dim = self_attn.output_proj.output_dim
 
-        self_attn_layer_norm = create_standard_layer_norm(
-            self.model_dim, device=device, dtype=dtype
+        self_attn_layer_norm = StandardLayerNorm(
+            self.model_dim, bias=True, device=device, dtype=dtype
         )
 
         self.self_attn_layer_norm = self_attn_layer_norm
@@ -77,8 +77,8 @@ class MonotonicTransformerDecoderLayer(Module):
         else:
             self.register_module("self_attn_dropout", None)
 
-        encoder_decoder_attn_layer_norm = create_standard_layer_norm(
-            self.model_dim, device=device, dtype=dtype
+        encoder_decoder_attn_layer_norm = StandardLayerNorm(
+            self.model_dim, bias=True, device=device, dtype=dtype
         )
 
         self.encoder_decoder_attn_layer_norm = encoder_decoder_attn_layer_norm
@@ -92,8 +92,8 @@ class MonotonicTransformerDecoderLayer(Module):
 
         self.p_choose_layer = p_choose_layer
 
-        ffn_layer_norm = create_standard_layer_norm(
-            self.model_dim, device=device, dtype=dtype
+        ffn_layer_norm = StandardLayerNorm(
+            self.model_dim, bias=True, device=device, dtype=dtype
         )
 
         self.ffn_layer_norm = ffn_layer_norm
